@@ -21,7 +21,8 @@
     </a>
   </p>
   <p align="center">
-    <strong>Accepted to ICRA 2026</strong> (Vienna, June 2026)
+    <strong>Accepted to ICRA 2026</strong> (Vienna, June 2026)<br>
+    <strong>Best Paper Award on Robot Learning Finalist</strong>
   </p>
 </p>
 
@@ -95,10 +96,10 @@ def get_plucker_raymap(K, c2w, height, width):
 ## BibTeX
 If you find this work useful, please cite:
 ```
-@article{jiang2025knowyourcamera,
+@inproceedings{jiang2026knowyourcamera,
   title     = {Do You Know Where Your Camera Is? {V}iew-Invariant Policy Learning with Camera Conditioning},
   author    = {Tianchong Jiang and Jingtian Ji and Xiangshan Tan and Jiading Fang and Anand Bhattad and Vitor Guizilini and Matthew R. Walter},
-  journal   = {arXiv preprint arXiv:2510.02268},
-  year      = {2025},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2026},
 }
 ```
