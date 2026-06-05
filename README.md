@@ -65,7 +65,7 @@ This invokes the matching `train.py` with the exact overrides and seed used for 
 
 If you use a coding agent (Cursor, Claude Code, Codex, etc.), you can point it at [`reproduce/SKILL.md`](reproduce/SKILL.md) and just say e.g. "reproduce fig 6 lift randomized with conditioning" — it will ask about your scheduler and draft a job script. I honestly don't know how well this works in practice yet.
 
-Results will not be bitwise identical across machines — this is not guaranteed on modern GPUs (see [this blog](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/) for background) — but numbers should match the paper in expectation. If something looks off, or you hit any other issue, I'd really appreciate hearing about it — please open an issue or email `tianchongj [at] ttic [dot] edu`.
+Results will not be bitwise identical across machines — this is not guaranteed on modern GPUs (see [this blog](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/) for background) — but numbers should match the paper in expectation. **If something looks off, or you hit any other issue, I'd really appreciate hearing about it — please open an issue or email `tianchongj [at] ttic [dot] edu`.**
 
 Training runs are long (typically hours to a day per seed on one GPU), so in practice you'll want a cluster (SLURM or similar).
 
