@@ -22,11 +22,14 @@
   </p>
   <p align="center">
     <strong>Accepted to ICRA 2026</strong> (Vienna, June 2026)<br>
-    <strong>Best Paper Award on Robot Learning Finalist</strong>
+    <strong>Best Paper Award on Robot Learning</strong>
   </p>
 </p>
 
+---
+
 ## Installation
+
 First, clone the repo and cd into it.
 ```
 git clone https://github.com/ripl/CamPoseOpensource
@@ -46,7 +49,10 @@ conda activate know_your_camera
 
 If you only need ManiSkill or robosuite, comment out the lines to install other one.
 
-## How to run
+---
+
+## Run Training
+
 You can run training in robosuite with
 ```
 python policy_robosuite/train.py
@@ -56,7 +62,10 @@ or in ManiSkill with
 python policy_maniskill/train.py
 ```
 
-## Reproducing the paper
+---
+
+## Reproduce Paper Results
+
 Every experiment in the paper is specified in [`reproduce/paper_runs.yaml`](reproduce/paper_runs.yaml), keyed by figure (e.g. `fig6`) and entry. To launch one run, pass the figure, entry, and seed:
 ```
 python reproduce/reproduce.py --paper_item fig6 --exp lift_randomized_with_conditioning --seed 0
@@ -69,7 +78,10 @@ Results will not be bitwise identical across machines — this is not guaranteed
 
 Training runs are long (typically hours to a day per seed on one GPU), so in practice you'll want a cluster (SLURM or similar).
 
+---
+
 ## Plücker Snippet
+
 To add camera conditioning to your policy, you can use the following minimalist snippet to get Plücker raymap from intrinsics and extrinsics. (It assumes OpenCV convention i.e. image origin at top-left, +z is forward.)
 ```
 import torch
@@ -93,7 +105,10 @@ def get_plucker_raymap(K, c2w, height, width):
 ```
 
 
+---
+
 ## BibTeX
+
 If you find this work useful, please cite:
 ```
 @inproceedings{jiang2026knowyourcamera,
