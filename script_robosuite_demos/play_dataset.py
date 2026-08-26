@@ -41,7 +41,7 @@ def _render_with_status(env, success: bool, camera_name: str = "frontview") -> n
     cv2.putText(frame_bgr, text, (x, y), font, font_scale, bgr_color, thickness, lineType=cv2.LINE_AA)
     return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-def create_replay_env_from_dataset(dataset_path):
+def create_replay_env_from_dataset(dataset_path, enable_rendering=True):
     """Create environment that matches the dataset configuration (env_name + env_kwargs).
 
     For eef_abs and eef_delta datasets, force absolute world-frame OSC_POSE.
@@ -59,7 +59,7 @@ def create_replay_env_from_dataset(dataset_path):
         env_kwargs = dict(env_kwargs)
         env_kwargs.update({
             'has_renderer': False,
-            'has_offscreen_renderer': True,
+            'has_offscreen_renderer': bool(enable_rendering),
             'use_camera_obs': False,
             'camera_heights': 480,
             'camera_widths': 640,
@@ -78,7 +78,7 @@ def replay_demo(demo_name, dataset_path, output_dir, camera_name="frontview"):
         states = np.array(demo_group['states'])
     
     # Create environment that matches the dataset
-    env, controller_type, action_space = create_replay_env_from_dataset(dataset_path)
+    env, controller_type, action_space = create_replay_env_from_dataset(dataset_path, enable_rendering=True)
     env.reset()
     
     # Set initial state and capture frames

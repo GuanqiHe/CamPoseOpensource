@@ -95,7 +95,10 @@ def validate_dataset(
 
     replay_success = []
     if replay_actions:
-        env, _, action_space = create_replay_env_from_dataset(str(dataset_path))
+        env, _, action_space = create_replay_env_from_dataset(
+            str(dataset_path),
+            enable_rendering=False,
+        )
         if action_space in ("eef_delta", "joint_delta"):
             env = wrap_env_action_space(env, action_space)
         try:
