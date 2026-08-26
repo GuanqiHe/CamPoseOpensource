@@ -265,6 +265,7 @@ def train(args: argparse.Namespace) -> None:
         dataset_sha256=sha256_file(args.dataset),
         rgb_cache_sha256=sha256_file(args.rgb_cache),
         dinov3_weights_sha256=sha256_file(os.path.join(args.dinov3_model_path, "model.safetensors")),
+        dinov3_model_source="ModelScope:facebook/dinov3-vitb16-pretrain-lvd1689m",
         train_frames=len(train_set),
         val_frames=len(val_set),
         action_dim=8,
