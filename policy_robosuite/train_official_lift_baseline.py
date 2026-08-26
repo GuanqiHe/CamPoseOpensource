@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 import robosuite as suite
 from robosuite.wrappers.action_wrapper import wrap_env_action_space
 
-from models.act import ACTPolicy
+from models.deterministic_dinov3_act import DeterministicDinoACTPolicy
 
 
 def set_seed(seed: int) -> None:
@@ -123,10 +123,8 @@ class LiftFrameDataset(Dataset):
         chunk = (chunk - self.action_mean) / self.action_std
         return {
             "image": image.unsqueeze(0),
-            "qpos": torch.zeros(7, dtype=torch.float32),
             "actions": torch.from_numpy(chunk),
             "is_pad": torch.from_numpy(is_pad),
-            "cam_extrinsics": torch.zeros(2, 4, 4, dtype=torch.float32),
         }
 
 
@@ -159,13 +157,8 @@ def policy_action_chunk(policy, image: np.ndarray, stats: dict, use_bf16: bool) 
     image_tensor = (
         torch.from_numpy(image.copy()).permute(2, 0, 1).float().div_(255.0).unsqueeze(0).unsqueeze(0).cuda()
     )
-    model_input = {
-        "image": image_tensor,
-        "qpos": torch.zeros(1, 7, device="cuda"),
-        "cam_extrinsics": torch.zeros(1, 2, 4, 4, device="cuda"),
-    }
     with torch.inference_mode(), autocast_context(use_bf16):
-        normalized = policy(model_input)[0].float().cpu().numpy()
+        normalized = policy({"image": image_tensor})[0].float().cpu().numpy()
     actions = normalized * stats["action_std"] + stats["action_mean"]
     return np.clip(actions, stats["action_min"], stats["action_max"])
 
@@ -269,10 +262,10 @@ def train(args: argparse.Namespace) -> None:
         train_frames=len(train_set),
         val_frames=len(val_set),
         action_dim=8,
-        obs_dim=7,
         configuration="canonical_cfg0",
         structural_condition="none",
-        proprio_input="zeroed",
+        policy_source_tokens="dinov3_rgb_patches_only",
+        cvae_latent=False,
         validation_split="every 10th frame within all 200 trajectories; optimization sanity only",
         command=" ".join(shlex.quote(item) for item in sys.argv),
         hostname=socket.gethostname(),
@@ -304,12 +297,7 @@ def train(args: argparse.Namespace) -> None:
     train_iterator = iter(train_loader)
 
     args.action_dim = 8
-    args.obs_dim = 7
-    args.use_plucker = False
-    args.use_cam_pose = False
-    args.prob_drop_proprio = 1.0
-    args.num_side_cam = 1
-    policy = ACTPolicy(args).cuda()
+    policy = DeterministicDinoACTPolicy(args).cuda()
     optimizer = policy.configure_optimizers()
 
     wandb.init(
@@ -422,7 +410,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-videos", type=int, default=3)
     parser.add_argument("--eval-final", type=int, default=1)
     parser.add_argument("--use-bf16", type=int, default=1)
-    parser.add_argument("--backbone", default="dinov3_vitb16")
     parser.add_argument("--chunk-size", type=int, default=30)
     parser.add_argument("--hidden-dim", type=int, default=512)
     parser.add_argument("--nheads", type=int, default=8)
@@ -432,10 +419,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--activation", default="relu")
     parser.add_argument("--pre-norm", type=int, default=1)
-    parser.add_argument("--kl-weight", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--latent-drop-prob", type=float, default=0.0)
     return parser.parse_args()
 
 
