@@ -53,7 +53,14 @@ def autocast_context(enabled: bool):
 class LiftFrameDataset(Dataset):
     """Frame-indexed ACT samples backed by the deterministic cloud RGB cache."""
 
-    def __init__(self, dataset_path: str, rgb_cache_path: str, chunk_size: int, split: str):
+    def __init__(
+        self,
+        dataset_path: str,
+        rgb_cache_path: str,
+        chunk_size: int,
+        split: str,
+        expected_demos: int = 200,
+    ):
         self.dataset_path = dataset_path
         self.rgb_cache_path = rgb_cache_path
         self.chunk_size = chunk_size
@@ -73,8 +80,8 @@ class LiftFrameDataset(Dataset):
                 (name for name in source["data"] if name.startswith("demo_")),
                 key=lambda name: int(name.split("_")[-1]),
             )
-            if len(demo_names) != 200:
-                raise RuntimeError(f"Expected exactly 200 demos, found {len(demo_names)}")
+            if len(demo_names) != expected_demos:
+                raise RuntimeError(f"Expected exactly {expected_demos} demos, found {len(demo_names)}")
             for demo_name in demo_names:
                 actions = source["data"][demo_name]["actions"][()].astype(np.float32)
                 rgb = cache["data"][demo_name]["agentview_rgb"]
@@ -238,8 +245,8 @@ def train(args: argparse.Namespace) -> None:
     commit = git_commit(repo)
     run_dir = Path(args.output_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    train_set = LiftFrameDataset(args.dataset, args.rgb_cache, args.chunk_size, "train")
-    val_set = LiftFrameDataset(args.dataset, args.rgb_cache, args.chunk_size, "val")
+    train_set = LiftFrameDataset(args.dataset, args.rgb_cache, args.chunk_size, "train", args.expected_demos)
+    val_set = LiftFrameDataset(args.dataset, args.rgb_cache, args.chunk_size, "val", args.expected_demos)
     stats = {
         "action_mean": train_set.action_mean,
         "action_std": train_set.action_std,
@@ -381,6 +388,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-project", default="official-lift-baseline")
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--expected-demos", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=20_000)
