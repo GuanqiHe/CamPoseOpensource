@@ -263,7 +263,14 @@ def generate_single_demo(demo_id, action_spaces, seed=None, task: str = "liftran
     return final_episode_data_by_space, success
 
 
-def generate_demos(num_demos=10, output_files=None, action_spaces=None, seed=None, task: str = "liftrand"):
+def generate_demos(
+    num_demos=10,
+    output_files=None,
+    action_spaces=None,
+    seed=None,
+    task: str = "liftrand",
+    output_dir=None,
+):
     """Generate multiple demos and save separate HDF5 files per action space.
 
     Args:
@@ -272,6 +279,8 @@ def generate_demos(num_demos=10, output_files=None, action_spaces=None, seed=Non
         action_spaces (list[str]): list of action spaces to record
         seed (int|None): seed
         task (str): task name
+        output_dir (str|None): destination directory. Defaults to generated_demos
+            next to this script.
 
     Returns:
         list[str]: absolute output paths aligned with action_spaces order
@@ -279,7 +288,11 @@ def generate_demos(num_demos=10, output_files=None, action_spaces=None, seed=Non
 
     assert len(output_files) == len(action_spaces), "output_files must have the same length as action_spaces"
 
-    output_paths = [f"/home/tianchongj/workspace/script_robosuite_demos/dev/test_demos/{fname}" for fname in output_files]
+    if output_dir is None:
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_demos")
+    output_dir = os.path.abspath(os.path.expanduser(output_dir))
+    os.makedirs(output_dir, exist_ok=True)
+    output_paths = [os.path.join(output_dir, fname) for fname in output_files]
 
     # Generate demos once per demo id; collect per-space outputs
     all_demos_by_space = {space: {} for space in action_spaces}
@@ -392,6 +405,12 @@ if __name__ == "__main__":
         choices=["eef_delta", "eef_abs", "joint_abs", "joint_delta"],
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Destination directory. Defaults to script_robosuite_demos/generated_demos.",
+    )
     args = parser.parse_args()
 
     generate_demos(
@@ -400,5 +419,5 @@ if __name__ == "__main__":
         action_spaces=args.action_spaces,
         seed=args.seed,
         task=args.task,
+        output_dir=args.output_dir,
     )
-    

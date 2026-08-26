@@ -61,7 +61,7 @@ def create_replay_env_from_dataset(dataset_path):
         env = suite.make(env_name=env_name, **env_kwargs)
         return env, controller_type, action_space
 
-def replay_demo(demo_name, dataset_path, output_dir="/home/tianchongj/workspace/script_robosuite_demos/dev/test_demos/replayed_demos"):
+def replay_demo(demo_name, dataset_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
     # Load demo data
@@ -118,8 +118,12 @@ def replay_demo(demo_name, dataset_path, output_dir="/home/tianchongj/workspace/
     
     return success_achieved
 
-def replay_dataset(dataset_path, num_demos=10):
+def replay_dataset(dataset_path, num_demos=10, output_dir=None):
     """Replay demos from any dataset by auto-detecting controller configuration"""
+    dataset_path = os.path.abspath(os.path.expanduser(dataset_path))
+    if output_dir is None:
+        output_dir = os.path.join(os.path.dirname(dataset_path), "replayed_demos")
+    output_dir = os.path.abspath(os.path.expanduser(output_dir))
     successful_replays = 0
     dataset_name = os.path.basename(dataset_path)
 
@@ -135,7 +139,7 @@ def replay_dataset(dataset_path, num_demos=10):
         demo_keys = demo_keys[:num_demos]
 
     for key in demo_keys:
-        success = replay_demo(key, dataset_path)
+        success = replay_demo(key, dataset_path, output_dir)
         if success:
             successful_replays += 1
          
@@ -143,7 +147,21 @@ def replay_dataset(dataset_path, num_demos=10):
     print(f"Dataset {dataset_name}: {successful_replays}/{num_demos} successful replays")
 
 if __name__ == "__main__":
-    replay_dataset("/home/tianchongj/workspace/script_robosuite_demos/dev/test_demos/eef_abs.hdf5", num_demos=10)
-    replay_dataset("/home/tianchongj/workspace/script_robosuite_demos/dev/test_demos/eef_delta.hdf5", num_demos=10)
-    replay_dataset("/home/tianchongj/workspace/script_robosuite_demos/dev/test_demos/joint_abs.hdf5", num_demos=10)
-    replay_dataset("/home/tianchongj/workspace/script_robosuite_demos/dev/test_demos/joint_delta.hdf5", num_demos=10)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dataset_path", type=str)
+    parser.add_argument("--num_demos", type=int, default=10)
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Destination directory. Defaults to <dataset-dir>/replayed_demos.",
+    )
+    args = parser.parse_args()
+
+    replay_dataset(
+        dataset_path=args.dataset_path,
+        num_demos=args.num_demos,
+        output_dir=args.output_dir,
+    )
