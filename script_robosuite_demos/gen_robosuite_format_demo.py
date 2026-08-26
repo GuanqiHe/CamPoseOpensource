@@ -23,6 +23,7 @@ EEF_SITE_NAME = "gripper0_right_grip_site"
 
 # Task to environment name mapping
 TASK_TO_ENV = {
+    "lift": "Lift",
     "liftrand": "LiftRand",
     "canrand": "CanRand",
     "squarerand": "SquareRand",
@@ -121,7 +122,7 @@ def generate_single_demo(demo_id, action_spaces, seed=None, task: str = "liftran
     env.reset()
     
     # Create absolute-pose motion planning controller per task
-    if task == "liftrand":
+    if task in ("lift", "liftrand"):
         mp_controller = LiftAbsMotionPlanningController(env)
     elif task == "canrand":
         mp_controller = CanAbsMotionPlanningController(env)
@@ -273,6 +274,8 @@ def generate_demos(
     task: str = "liftrand",
     output_dir=None,
     robot: str = "Panda",
+    successful_only: bool = False,
+    max_attempts: int | None = None,
 ):
     """Generate multiple demos and save separate HDF5 files per action space.
 
@@ -284,6 +287,9 @@ def generate_demos(
         task (str): task name
         output_dir (str|None): destination directory. Defaults to generated_demos
             next to this script.
+        successful_only (bool): keep retrying until exactly @num_demos successful
+            trajectories have been collected.
+        max_attempts (int|None): safety limit for successful-only collection.
 
     Returns:
         list[str]: absolute output paths aligned with action_spaces order
@@ -300,21 +306,58 @@ def generate_demos(
     # Generate demos once per demo id; collect per-space outputs
     all_demos_by_space = {space: {} for space in action_spaces}
     successful_demos = 0
+    attempts = 0
+    demo_metadata = {}
+    if max_attempts is None:
+        max_attempts = num_demos * 5 if successful_only else num_demos
 
-    for i in tqdm(range(num_demos), desc=f"Generating {task} demos for {action_spaces}", unit="demo"):
+    progress = tqdm(total=num_demos, desc=f"Generating {task} demos for {action_spaces}", unit="demo")
+    while len(next(iter(all_demos_by_space.values()))) < num_demos and attempts < max_attempts:
+        attempt_id = attempts
+        attempts += 1
         demo_data_by_space, success = generate_single_demo(
-            i, action_spaces, seed=seed, task=task, robot=robot
+            attempt_id, action_spaces, seed=seed, task=task, robot=robot
         )
+
+        if successful_only and not success:
+            continue
+
+        accepted_id = len(next(iter(all_demos_by_space.values())))
         for space in action_spaces:
-            all_demos_by_space[space][f"demo_{i}"] = demo_data_by_space[space]
+            all_demos_by_space[space][f"demo_{accepted_id}"] = demo_data_by_space[space]
+
+        reference_demo = demo_data_by_space[action_spaces[0]]
+        initial_cube_pos = np.asarray(reference_demo["obs"]["object"][0][:3], dtype=np.float64)
+        success_steps = np.flatnonzero(np.isclose(reference_demo["rewards"], 1.0))
+        demo_metadata[f"demo_{accepted_id}"] = {
+            "source_attempt_id": attempt_id,
+            "initial_cube_pos": initial_cube_pos,
+            "success_step": int(success_steps[0]) if len(success_steps) else -1,
+            "success": bool(success),
+        }
+
         if success:
             successful_demos += 1
+        progress.update(1)
+
+    progress.close()
+
+    if len(next(iter(all_demos_by_space.values()))) != num_demos:
+        raise RuntimeError(
+            f"Collected {successful_demos}/{num_demos} successful demos after "
+            f"{attempts}/{max_attempts} attempts"
+        )
 
     if VERBOSE:
         print(f"\nGenerated {num_demos} demos, {successful_demos} successful")
 
     # Save per action space
-    env_name_meta = {"liftrand": "LiftRand", "canrand": "CanRand", "squarerand": "SquareRand"}[task]
+    env_name_meta = {
+        "lift": "Lift",
+        "liftrand": "LiftRand",
+        "canrand": "CanRand",
+        "squarerand": "SquareRand",
+    }[task]
     for space, out_path in zip(action_spaces, output_paths):
         # Controller config per space
         if space in ("joint_abs", "joint_delta"):
@@ -368,11 +411,20 @@ def generate_demos(
             data_group = f.create_group('data')
             data_group.attrs['env_args'] = env_args
             data_group.attrs['total'] = np.int64(total_timesteps)
+            data_group.attrs['generation_seed'] = -1 if seed is None else int(seed)
+            data_group.attrs['generation_attempts'] = int(attempts)
+            data_group.attrs['successful_only'] = bool(successful_only)
+            data_group.attrs['successful_demos'] = int(successful_demos)
             # Record the action space / type for this dataset (e.g., eef_abs, eef_delta, joint_abs, joint_delta)
             data_group.attrs['action_space'] = space
 
             for demo_name, demo_data in demos_for_space.items():
                 demo_group = data_group.create_group(demo_name)
+                metadata = demo_metadata[demo_name]
+                demo_group.attrs['source_attempt_id'] = int(metadata['source_attempt_id'])
+                demo_group.attrs['initial_cube_pos'] = metadata['initial_cube_pos']
+                demo_group.attrs['success_step'] = int(metadata['success_step'])
+                demo_group.attrs['success'] = bool(metadata['success'])
                 demo_group.create_dataset('actions', data=demo_data['actions'])
                 demo_group.create_dataset('rewards', data=demo_data['rewards'])
                 demo_group.create_dataset('dones', data=demo_data['dones'])
@@ -399,7 +451,7 @@ def generate_demos(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, default="squarerand", choices=["liftrand", "canrand", "squarerand"])
+    parser.add_argument("--task", type=str, default="squarerand", choices=["lift", "liftrand", "canrand", "squarerand"])
     parser.add_argument("--num_demos", type=int, default=10)
     parser.add_argument(
         "--output_files", type=str, nargs="+", default=["eef_abs.hdf5", "eef_delta.hdf5", "joint_abs.hdf5", "joint_delta.hdf5"],
@@ -411,6 +463,17 @@ if __name__ == "__main__":
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--robot", type=str, default="Panda")
+    parser.add_argument(
+        "--successful_only",
+        action="store_true",
+        help="Retry failed attempts until exactly --num_demos successful trajectories are saved.",
+    )
+    parser.add_argument(
+        "--max_attempts",
+        type=int,
+        default=None,
+        help="Safety limit for --successful_only collection (default: 5 * num_demos).",
+    )
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -427,4 +490,6 @@ if __name__ == "__main__":
         task=args.task,
         output_dir=args.output_dir,
         robot=args.robot,
+        successful_only=args.successful_only,
+        max_attempts=args.max_attempts,
     )

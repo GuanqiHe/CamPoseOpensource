@@ -24,8 +24,8 @@ def _ensure_uint8(frame: np.ndarray) -> np.ndarray:
     return frame
 
 
-def _render_with_status(env, success: bool) -> np.ndarray:
-    frame = env.sim.render(camera_name="frontview", height=480, width=640)
+def _render_with_status(env, success: bool, camera_name: str = "frontview") -> np.ndarray:
+    frame = env.sim.render(camera_name=camera_name, height=480, width=640)
     frame = np.flipud(frame)
     frame = _ensure_uint8(frame)
     h, w = frame.shape[:2]
@@ -68,7 +68,7 @@ def create_replay_env_from_dataset(dataset_path):
         env = suite.make(env_name=env_name, **env_kwargs)
         return env, controller_type, action_space
 
-def replay_demo(demo_name, dataset_path, output_dir):
+def replay_demo(demo_name, dataset_path, output_dir, camera_name="frontview"):
     os.makedirs(output_dir, exist_ok=True)
     
     # Load demo data
@@ -87,7 +87,7 @@ def replay_demo(demo_name, dataset_path, output_dir):
     
     frames = []
 
-    frames.append(_render_with_status(env, bool(env._check_success())))
+    frames.append(_render_with_status(env, bool(env._check_success()), camera_name=camera_name))
     
     success_achieved = False
     success_step = -1
@@ -99,7 +99,7 @@ def replay_demo(demo_name, dataset_path, output_dir):
 
     for step, action in enumerate(actions):
         env.step(action)
-        frames.append(_render_with_status(env, bool(env._check_success())))
+        frames.append(_render_with_status(env, bool(env._check_success()), camera_name=camera_name))
         if env._check_success() and not success_achieved:
             success_achieved = True
             success_step = step
@@ -125,7 +125,7 @@ def replay_demo(demo_name, dataset_path, output_dir):
     
     return success_achieved
 
-def replay_dataset(dataset_path, num_demos=10, output_dir=None):
+def replay_dataset(dataset_path, num_demos=10, output_dir=None, camera_name="frontview"):
     """Replay demos from any dataset by auto-detecting controller configuration"""
     dataset_path = os.path.abspath(os.path.expanduser(dataset_path))
     if output_dir is None:
@@ -146,7 +146,7 @@ def replay_dataset(dataset_path, num_demos=10, output_dir=None):
         demo_keys = demo_keys[:num_demos]
 
     for key in demo_keys:
-        success = replay_demo(key, dataset_path, output_dir)
+        success = replay_demo(key, dataset_path, output_dir, camera_name=camera_name)
         if success:
             successful_replays += 1
          
@@ -160,6 +160,12 @@ if __name__ == "__main__":
     parser.add_argument("dataset_path", type=str)
     parser.add_argument("--num_demos", type=int, default=10)
     parser.add_argument(
+        "--camera_name",
+        type=str,
+        default="frontview",
+        help="robosuite camera used for replay videos (for policy QA use agentview).",
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default=None,
@@ -171,4 +177,5 @@ if __name__ == "__main__":
         dataset_path=args.dataset_path,
         num_demos=args.num_demos,
         output_dir=args.output_dir,
+        camera_name=args.camera_name,
     )
