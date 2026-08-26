@@ -36,6 +36,7 @@ from visualize_equivalent_urdf_unit_test import (
 
 KEYPOINT_ERROR_THRESHOLD_M = 1e-5
 QPOS_ERROR_THRESHOLD_RAD = 1e-6
+RESET_SEED = 0
 
 
 @dataclass
@@ -81,16 +82,39 @@ def _render(env) -> tuple[np.ndarray, np.ndarray]:
     return frame, pixels
 
 
+def _restore_deterministic_state(env, state: np.ndarray) -> None:
+    """Restore recorded state and clear dynamics omitted by MjSimState.flatten."""
+    env.sim.set_state_from_flattened(state)
+    data = env.sim.data
+    for field in (
+        "qacc_warmstart",
+        "qacc",
+        "ctrl",
+        "qfrc_applied",
+        "xfrc_applied",
+    ):
+        values = getattr(data, field, None)
+        if values is not None:
+            values[...] = 0
+    if getattr(data, "act", None) is not None:
+        data.act[...] = 0
+    env.sim.forward()
+    # mj_forward may update acceleration-related buffers.  Warm-start must be
+    # zero immediately before the first controller step for paired rollouts.
+    data.qacc_warmstart[...] = 0
+
+
 def _replay_demo(dataset_path: str, demo_name: str) -> ReplayResult:
     states, actions = _load_demo(dataset_path, demo_name)
+    np.random.seed(RESET_SEED)
     env, _, action_space = create_replay_env_from_dataset(dataset_path)
     if action_space != "joint_delta":
         env.close()
         raise ValueError(f"Expected joint_delta dataset, got {action_space!r}")
 
+    np.random.seed(RESET_SEED)
     env.reset()
-    env.sim.set_state_from_flattened(states[0])
-    env.sim.forward()
+    _restore_deterministic_state(env, states[0])
     env = wrap_env_action_space(env, action_space)
     env.set_init_action()
 
