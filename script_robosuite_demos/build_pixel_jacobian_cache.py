@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import h5py
 import numpy as np
+from tqdm import tqdm
 
 from equivalent_panda_configs import CONFIG_SPECS  # registers robot classes
 from play_dataset import create_replay_env_from_dataset
@@ -74,6 +75,10 @@ def build_cache(dataset_dir: str, output_path: str) -> dict:
 
     canonical_path = dataset_paths["cfg0"]
     demo_names = _demo_names(canonical_path)
+    total_physical_steps = sum(
+        len(_load_demo(canonical_path, demo_name)[0])
+        for demo_name in demo_names
+    )
     all_actions = []
     actions_by_demo = {}
     for demo_name in demo_names:
@@ -141,6 +146,11 @@ def build_cache(dataset_dir: str, output_path: str) -> dict:
             output.create_dataset("action_std", data=action_std)
 
             demos_group = output.create_group("demos")
+            progress = tqdm(
+                total=total_physical_steps,
+                desc="Building pixel-Jacobian cache",
+                unit="frame",
+            )
             for demo_name in demo_names:
                 states, _ = _load_demo(canonical_path, demo_name)
                 group = demos_group.create_group(demo_name)
@@ -178,6 +188,9 @@ def build_cache(dataset_dir: str, output_path: str) -> dict:
                     jacobian_square_sum += np.square(values).sum(axis=1)
                     jacobian_nonzero_count += mask.sum()
                     num_physical_steps += 1
+                    progress.update(1)
+
+            progress.close()
 
             jacobian_rms = np.sqrt(
                 jacobian_square_sum / np.maximum(jacobian_nonzero_count, 1)
