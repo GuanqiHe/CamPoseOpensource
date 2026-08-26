@@ -36,20 +36,22 @@ def get_eef_site_pose(env):
     aa = T.quat2axisangle(T.mat2quat(rot_mat))
     return pos, aa
 
-def create_demo_env(task: str):
+def create_demo_env(task: str, robot: str = "Panda"):
     """Create selected environment configured for absolute, world-frame OSC_POSE."""
 
     if task not in TASK_TO_ENV:
         raise ValueError(f"Unknown task: {task}")
     env_name = TASK_TO_ENV[task]
 
+    # All equivalent Panda coordinate configurations share the canonical
+    # controller gains; only their generalized-coordinate convention differs.
     controller_configs = load_composite_controller_config(robot="Panda")
     controller_configs["body_parts"]["right"]["input_type"] = "absolute"
     controller_configs["body_parts"]["right"]["input_ref_frame"] = "world"
 
     env = suite.make(
         env_name=env_name,
-        robots="Panda",
+        robots=robot,
         has_renderer=False,
         has_offscreen_renderer=False,
         use_camera_obs=False,
@@ -95,7 +97,7 @@ def extract_observation_data(obs, env):
     return obs_data
 
 
-def generate_single_demo(demo_id, action_spaces, seed=None, task: str = "liftrand"):
+def generate_single_demo(demo_id, action_spaces, seed=None, task: str = "liftrand", robot: str = "Panda"):
     """Generate a single demo using motion planning for the selected task, recording actions for multiple spaces.
 
     Args:
@@ -115,7 +117,7 @@ def generate_single_demo(demo_id, action_spaces, seed=None, task: str = "liftran
         np.random.seed(seed + demo_id)
     
     # Always use absolute-pose controller for planning
-    env = create_demo_env(task)
+    env = create_demo_env(task, robot=robot)
     env.reset()
     
     # Create absolute-pose motion planning controller per task
@@ -270,6 +272,7 @@ def generate_demos(
     seed=None,
     task: str = "liftrand",
     output_dir=None,
+    robot: str = "Panda",
 ):
     """Generate multiple demos and save separate HDF5 files per action space.
 
@@ -299,7 +302,9 @@ def generate_demos(
     successful_demos = 0
 
     for i in tqdm(range(num_demos), desc=f"Generating {task} demos for {action_spaces}", unit="demo"):
-        demo_data_by_space, success = generate_single_demo(i, action_spaces, seed=seed, task=task)
+        demo_data_by_space, success = generate_single_demo(
+            i, action_spaces, seed=seed, task=task, robot=robot
+        )
         for space in action_spaces:
             all_demos_by_space[space][f"demo_{i}"] = demo_data_by_space[space]
         if success:
@@ -348,7 +353,7 @@ def generate_demos(
             "use_camera_obs": False,
             "control_freq": 20,
             "controller_configs": controller_config,
-            "robots": ["Panda"],
+            "robots": [robot],
             "camera_depths": False,
             "camera_heights": 84,
             "camera_widths": 84,
@@ -405,6 +410,7 @@ if __name__ == "__main__":
         choices=["eef_delta", "eef_abs", "joint_abs", "joint_delta"],
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--robot", type=str, default="Panda")
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -420,4 +426,5 @@ if __name__ == "__main__":
         seed=args.seed,
         task=args.task,
         output_dir=args.output_dir,
+        robot=args.robot,
     )

@@ -8,6 +8,13 @@ import json
 import cv2
 from robosuite.wrappers.action_wrapper import wrap_env_action_space
 
+# Register the local equivalent-coordinate Panda models when available. This is
+# a no-op for the original datasets and keeps their replay behavior unchanged.
+try:
+    import equivalent_panda_configs  # noqa: F401
+except ImportError:
+    equivalent_panda_configs = None
+
 
 def _ensure_uint8(frame: np.ndarray) -> np.ndarray:
     if frame.dtype != np.uint8:
