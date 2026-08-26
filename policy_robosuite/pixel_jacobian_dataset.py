@@ -138,14 +138,22 @@ class PairedPhysicalBatchSampler(Sampler[list[int]]):
         physical_batch_size: int,
         num_batches: int,
         seed: int,
+        start_batch: int = 0,
     ) -> None:
         self.dataset = dataset
         self.physical_batch_size = physical_batch_size
         self.num_batches = num_batches
         self.seed = seed
+        self.start_batch = start_batch
 
     def __iter__(self):
         rng = np.random.default_rng(self.seed)
+        for _ in range(self.start_batch):
+            rng.integers(
+                0,
+                self.dataset.num_physical_steps,
+                size=self.physical_batch_size,
+            )
         for _ in range(self.num_batches):
             physical_indexes = rng.integers(
                 0,

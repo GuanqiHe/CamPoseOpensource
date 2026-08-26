@@ -194,13 +194,6 @@ def train(args: argparse.Namespace) -> dict:
     dataset = PixelJacobianPairedDataset(
         args.cache, args.configs, args.chunk_size
     )
-    sampler = PairedPhysicalBatchSampler(
-        dataset,
-        args.physical_batch_size,
-        args.steps,
-        args.seed,
-    )
-    loader = DataLoader(dataset, batch_sampler=sampler, num_workers=0)
     model = DeterministicACT(
         condition_mode=args.condition,
         chunk_size=args.chunk_size,
@@ -215,6 +208,60 @@ def train(args: argparse.Namespace) -> dict:
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
+    resume_checkpoint = None
+    start_step = 0
+    samples_seen = 0
+    previous_elapsed_seconds = 0.0
+    if args.resume_checkpoint:
+        resume_checkpoint = torch.load(
+            args.resume_checkpoint, map_location=device, weights_only=False
+        )
+        resume_config = resume_checkpoint["config"]
+        immutable_keys = (
+            "condition",
+            "configs",
+            "chunk_size",
+            "hidden_dim",
+            "nheads",
+            "ffn_dim",
+            "enc_layers",
+            "dec_layers",
+            "dropout",
+            "imagenet",
+        )
+        mismatches = {
+            key: (resume_config.get(key), getattr(args, key))
+            for key in immutable_keys
+            if resume_config.get(key) != getattr(args, key)
+        }
+        if mismatches:
+            raise ValueError(f"Resume configuration mismatch: {mismatches}")
+        model.load_state_dict(resume_checkpoint["model"])
+        optimizer.load_state_dict(resume_checkpoint["optimizer"])
+        samples_seen = int(resume_checkpoint["samples_seen"])
+        start_step = int(
+            resume_checkpoint.get(
+                "step",
+                samples_seen
+                // (args.physical_batch_size * dataset.num_configs),
+            )
+        )
+        previous_elapsed_seconds = float(
+            resume_checkpoint.get("metrics", {}).get("elapsed_seconds", 0.0)
+        )
+        if start_step >= args.steps:
+            raise ValueError(
+                f"Checkpoint step {start_step} is not below target {args.steps}"
+            )
+
+    sampler = PairedPhysicalBatchSampler(
+        dataset,
+        args.physical_batch_size,
+        args.steps - start_step,
+        args.seed,
+        start_batch=start_step,
+    )
+    loader = DataLoader(dataset, batch_sampler=sampler, num_workers=0)
     parameter_count = sum(
         parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
@@ -241,12 +288,11 @@ def train(args: argparse.Namespace) -> dict:
         config=run_config,
     )
     history_path = os.path.join(args.output_dir, "history.jsonl")
-    samples_seen = 0
     start_time = time.perf_counter()
     last_metrics = None
 
     model.train()
-    for step, batch in enumerate(loader, start=1):
+    for step, batch in enumerate(loader, start=start_step + 1):
         image = batch["image"].to(device, non_blocking=True)
         jacobian = batch["pixel_jacobian"].to(device, non_blocking=True)
         signs = batch["global_sign"].to(device, non_blocking=True)
@@ -286,7 +332,9 @@ def train(args: argparse.Namespace) -> dict:
         with open(history_path, "a", encoding="utf-8") as history:
             history.write(json.dumps(log_record, sort_keys=True) + "\n")
 
-    elapsed_seconds = time.perf_counter() - start_time
+    elapsed_seconds = (
+        previous_elapsed_seconds + time.perf_counter() - start_time
+    )
     if last_metrics is None:
         last_metrics = evaluate(model, dataset, device, args.eval_batch_size)
     final_metrics = asdict(last_metrics)
@@ -314,6 +362,7 @@ def train(args: argparse.Namespace) -> dict:
             "config": run_config,
             "metrics": final_metrics,
             "samples_seen": samples_seen,
+            "step": args.steps,
             "wandb_run_id": wandb_run.id,
         },
         os.path.join(args.output_dir, "checkpoint_final.pt"),
@@ -327,6 +376,7 @@ def main() -> None:
     parser.add_argument("--cache", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--run-name", required=True)
+    parser.add_argument("--resume-checkpoint")
     parser.add_argument("--condition", choices=CONDITION_MODES, required=True)
     parser.add_argument("--configs", nargs="+", required=True)
     parser.add_argument("--steps", type=int, default=2000)
