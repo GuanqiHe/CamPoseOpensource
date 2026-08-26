@@ -7,6 +7,7 @@ from torch import nn
 from torch.autograd import Variable
 from einops import rearrange, repeat
 from .backbone import BackboneResNet, BackboneLinear, BackboneMLP, BackboneLateConcat
+from .dinov3_backbone import FrozenDinoV3Backbone
 from .transformer import TransformerEncoder, TransformerEncoderLayer, Transformer
 
 import numpy as np
@@ -120,7 +121,13 @@ class DETRVAE(nn.Module):
 
 def build(args):
 
-    if 'resnet' in args.backbone:
+    if args.backbone == 'dinov3_vitb16':
+        backbone = FrozenDinoV3Backbone(
+            model_path=args.dinov3_model_path,
+            hidden_dim=args.hidden_dim,
+            num_cameras=args.num_side_cam,
+        )
+    elif 'resnet' in args.backbone:
         backbone = BackboneResNet(
             hidden_dim=args.hidden_dim,
             use_plucker=args.use_plucker,
@@ -190,4 +197,4 @@ def build(args):
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    return model, optimizer 
+    return model, optimizer

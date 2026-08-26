@@ -13,6 +13,7 @@ class ACTPolicy(nn.Module):
         self.kl_weight = args.kl_weight
         self.prob_drop_proprio = args.prob_drop_proprio
         self.use_cam_pose = args.use_cam_pose
+        self.backbone_name = args.backbone
         print(f'KL Weight {self.kl_weight}')
 
     def __call__(self, data_dict):
@@ -22,12 +23,12 @@ class ACTPolicy(nn.Module):
         is_pad = data_dict.get('is_pad', None)
         cam_extrinsics = data_dict.get('cam_extrinsics', None)
         
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                         std=[0.229, 0.224, 0.225])
-
         # Image format: [batch, num_cam, channel, height, width]
         assert image.size(2) == 3 or image.size(2) == 9
-        image[:, :, :3] = normalize(image[:, :, :3])
+        if self.backbone_name != 'dinov3_vitb16':
+            normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                             std=[0.229, 0.224, 0.225])
+            image[:, :, :3] = normalize(image[:, :, :3])
 
         # Prepare data for model
         model_data = {
