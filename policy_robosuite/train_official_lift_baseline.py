@@ -8,7 +8,10 @@ import hashlib
 import json
 import os
 import random
+import shlex
+import socket
 import subprocess
+import sys
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -254,6 +257,9 @@ def train(args: argparse.Namespace) -> None:
         "action_max": train_set.action_max,
     }
     config = vars(args).copy()
+    import mujoco
+    import transformers
+
     config.update(
         git_commit=commit,
         dataset_sha256=sha256_file(args.dataset),
@@ -267,6 +273,17 @@ def train(args: argparse.Namespace) -> None:
         structural_condition="none",
         proprio_input="zeroed",
         validation_split="every 10th frame within all 200 trajectories; optimization sanity only",
+        command=" ".join(shlex.quote(item) for item in sys.argv),
+        hostname=socket.gethostname(),
+        gpu_name=torch.cuda.get_device_name(0),
+        environment_versions={
+            "python": sys.version.split()[0],
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "mujoco": mujoco.__version__,
+            "robosuite": getattr(suite, "__version__", "unknown"),
+            "numpy": np.__version__,
+        },
     )
     with open(run_dir / "config.json", "w") as handle:
         json.dump(config, handle, indent=2)
