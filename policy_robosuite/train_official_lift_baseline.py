@@ -46,6 +46,10 @@ def git_commit(repo: str) -> str:
     return subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
 
 
+def autocast_context(enabled: bool):
+    return torch.autocast("cuda", dtype=torch.bfloat16) if enabled else nullcontext()
+
+
 class LiftFrameDataset(Dataset):
     """Frame-indexed ACT samples backed by the deterministic cloud RGB cache."""
 
@@ -150,8 +154,7 @@ def policy_action_chunk(policy, image: np.ndarray, stats: dict, use_bf16: bool) 
         "qpos": torch.zeros(1, 7, device="cuda"),
         "cam_extrinsics": torch.zeros(1, 2, 4, 4, device="cuda"),
     }
-    context = torch.autocast("cuda", dtype=torch.bfloat16) if use_bf16 else nullcontext()
-    with torch.inference_mode(), context:
+    with torch.inference_mode(), autocast_context(use_bf16):
         normalized = policy(model_input)[0].float().cpu().numpy()
     actions = normalized * stats["action_std"] + stats["action_mean"]
     return np.clip(actions, stats["action_min"], stats["action_max"])
@@ -248,8 +251,15 @@ def train(args: argparse.Namespace) -> None:
         git_commit=commit,
         dataset_sha256=sha256_file(args.dataset),
         rgb_cache_sha256=sha256_file(args.rgb_cache),
+        dinov3_weights_sha256=sha256_file(os.path.join(args.dinov3_model_path, "model.safetensors")),
         train_frames=len(train_set),
         val_frames=len(val_set),
+        action_dim=8,
+        obs_dim=7,
+        configuration="canonical_cfg0",
+        structural_condition="none",
+        proprio_input="zeroed",
+        validation_split="every 10th frame within all 200 trajectories; optimization sanity only",
     )
     with open(run_dir / "config.json", "w") as handle:
         json.dump(config, handle, indent=2)
@@ -282,7 +292,7 @@ def train(args: argparse.Namespace) -> None:
         project=args.wandb_project,
         name=args.run_name,
         config=config,
-        mode="online",
+        mode=args.wandb_mode,
     )
     wandb.run.summary["git_commit"] = commit
     wandb.run.summary["dataset_sha256"] = config["dataset_sha256"]
@@ -302,8 +312,7 @@ def train(args: argparse.Namespace) -> None:
                 batch = next(train_iterator)
             batch = {key: value.cuda(non_blocking=True) for key, value in batch.items()}
             policy.train()
-            context = torch.autocast("cuda", dtype=torch.bfloat16) if use_bf16 else nullcontext()
-            with context:
+            with autocast_context(use_bf16):
                 losses = policy(batch)
                 loss = losses["loss"]
             loss.backward()
@@ -329,7 +338,7 @@ def train(args: argparse.Namespace) -> None:
                         if batch_index >= args.val_batches:
                             break
                         batch = {key: value.cuda(non_blocking=True) for key, value in batch.items()}
-                        with context:
+                        with autocast_context(use_bf16):
                             rows.append(policy(batch))
                 values = mean_metrics(rows)
                 wandb.log({f"val/{key}": value for key, value in values.items()}, step=step)
@@ -339,7 +348,7 @@ def train(args: argparse.Namespace) -> None:
                 save_checkpoint(checkpoint, policy, optimizer, step, samples_seen, config, stats, commit)
                 wandb.run.summary["latest_checkpoint"] = str(checkpoint)
 
-            if step % args.eval_every == 0 or step == args.max_steps:
+            if step % args.eval_every == 0 or (step == args.max_steps and args.eval_final):
                 eval_seeds = args.eval_seeds if step % args.full_eval_every == 0 or step == args.max_steps else args.quick_eval_seeds
                 summary = evaluate(
                     policy,
@@ -370,6 +379,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--wandb-entity", default="wuji-tech")
     parser.add_argument("--wandb-project", default="official-lift-baseline")
+    parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -384,6 +394,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-seeds", type=int, default=50)
     parser.add_argument("--eval-horizon", type=int, default=400)
     parser.add_argument("--eval-videos", type=int, default=3)
+    parser.add_argument("--eval-final", type=int, default=1)
     parser.add_argument("--use-bf16", type=int, default=1)
     parser.add_argument("--backbone", default="dinov3_vitb16")
     parser.add_argument("--chunk-size", type=int, default=30)
