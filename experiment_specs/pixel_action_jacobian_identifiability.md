@@ -64,7 +64,8 @@ Training does not start until Gate A passes.
 Train each representation on `cfg0` only with an identical optimizer, update budget, and random-seed set.
 
 - Primary: non-padding normalized action MAE at deterministic inference.
-- Secondary: sign accuracy on target entries with `abs(action) >= 0.05`.
+- Secondary: arm sign accuracy on target entries with
+  `abs(raw_action) >= 0.002 rad`; gripper accuracy is reported separately.
 - Gate: all three variants must reach `MAE <= 0.03` and sign accuracy `>= 95%` on every seed.
 
 Failure here is a pipeline or capacity failure; Stage 2 is not interpreted.
@@ -74,7 +75,8 @@ Failure here is a pipeline or capacity failure; Stage 2 is not interpreted.
 Jointly train on `cfg0`-`cfg4`. Each minibatch samples physical time indices uniformly and includes or balances all configurations.
 
 - Report overall and per-configuration normalized action MAE.
-- Report per-joint sign accuracy for entries with `abs(action) >= 0.05`.
+- Report per-joint arm sign accuracy for entries with
+  `abs(raw_action) >= 0.002 rad`; report gripper accuracy separately.
 - Compute the exact deterministic L1 Bayes lower bound from each set of paired labels.
 - Success criterion for conditioned variants: `MAE <= 0.03` and sign accuracy `>= 95%` per configuration.
 - Expected control: `none` cannot predict every contradictory paired label from identical input. Its error must be compared with the computed Bayes bound rather than with training loss alone.
@@ -88,3 +90,11 @@ The training objective is masked action L1. Model selection and all reported met
 - Current Stage 2 supports only the claim that explicit raw-action semantics resolve missing information.
 - A later experiment must train on balanced sign combinations and evaluate unseen combinations before claiming held-out configuration generalization.
 - Different kinematic link geometries or camera arrangements are required before claiming that a pixel-aligned field is better than a compact global action specification.
+
+### Pre-training metric amendment
+
+Before any model training, source-action inspection showed that the arm-action
+maximum is `0.0404 rad`; the original `0.05` sign threshold would therefore
+select only gripper actions. The arm threshold was corrected to `0.002 rad`,
+which selects 1,238 arm entries across the 333 canonical time steps. This
+amendment was made before observing any model result.
