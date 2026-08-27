@@ -459,6 +459,14 @@ def train(args: argparse.Namespace) -> dict:
                     "val_ood/normalized_action_mae": ood_metrics["normalized_action_mae"],
                     "val_ood/arm_sign_accuracy": ood_metrics["arm_sign_accuracy"],
                     "val_ood/gripper_sign_accuracy": ood_metrics["gripper_sign_accuracy"],
+                    # Keep explicit test aliases visible in W&B.  These are
+                    # fixed held-out evaluation sets, not training metrics.
+                    "test_id/normalized_action_mae": id_metrics["normalized_action_mae"],
+                    "test_id/arm_sign_accuracy": id_metrics["arm_sign_accuracy"],
+                    "test_id/gripper_sign_accuracy": id_metrics["gripper_sign_accuracy"],
+                    "test_ood/normalized_action_mae": ood_metrics["normalized_action_mae"],
+                    "test_ood/arm_sign_accuracy": ood_metrics["arm_sign_accuracy"],
+                    "test_ood/gripper_sign_accuracy": ood_metrics["gripper_sign_accuracy"],
                 }
                 wandb.log(metrics, step=step)
                 torch.save(
