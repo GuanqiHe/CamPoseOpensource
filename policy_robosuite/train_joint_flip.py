@@ -325,6 +325,8 @@ def rollout_success(
 
 def train(args: argparse.Namespace) -> dict:
     set_seed(args.seed)
+    if args.rollout_seeds_per_config <= 0:
+        raise ValueError("--rollout-seeds-per-config must be positive")
     device = torch.device(args.device)
     source = JointFlipSource(
         args.cache,
@@ -550,22 +552,44 @@ def train(args: argparse.Namespace) -> dict:
                     run_dir / "checkpoints" / f"step_{step:06d}.pth",
                 )
             if step % args.rollout_every == 0 or step == args.steps:
-                rollout = rollout_success(
-                    model,
-                    args.dataset,
-                    source,
-                    heldout_set.joint_signs[0],
-                    stats,
-                    args.condition,
-                    device,
-                    args.rollout_seeds,
-                    args.rollout_horizon,
-                    args.rollout_videos,
-                    run_dir / "rollouts" / f"step_{step:06d}",
+                rollout_metrics = {}
+                for config_id, signs in heldout_signs.items():
+                    rollout_metrics[config_id] = rollout_success(
+                        model,
+                        args.dataset,
+                        source,
+                        signs,
+                        stats,
+                        args.condition,
+                        device,
+                        args.rollout_seeds_per_config,
+                        args.rollout_horizon,
+                        args.rollout_videos,
+                        run_dir
+                        / "rollouts"
+                        / f"step_{step:06d}"
+                        / config_id,
+                    )
+                macro_success = float(
+                    np.mean(
+                        [
+                            metrics["success_rate"]
+                            for metrics in rollout_metrics.values()
+                        ]
+                    )
                 )
-                wandb.log({"rollout_heldout/success_rate": rollout["success_rate"]}, step=step)
-                if rollout["success_rate"] > best_success:
-                    best_success = rollout["success_rate"]
+                logged_rollouts = {
+                    "rollout_ood/macro_success_rate": macro_success,
+                    **{
+                        f"rollout_ood/{config_id}_success_rate": metrics[
+                            "success_rate"
+                        ]
+                        for config_id, metrics in rollout_metrics.items()
+                    },
+                }
+                wandb.log(logged_rollouts, step=step)
+                if macro_success > best_success:
+                    best_success = macro_success
                     run.summary["best_heldout_success_rate"] = best_success
                     run.summary["best_step"] = step
     finally:
@@ -599,7 +623,7 @@ def main() -> None:
     parser.add_argument("--eval-batch-size", type=int, default=128)
     parser.add_argument("--eval-every", type=int, default=500)
     parser.add_argument("--rollout-every", type=int, default=5000)
-    parser.add_argument("--rollout-seeds", type=int, default=50)
+    parser.add_argument("--rollout-seeds-per-config", type=int, required=True)
     parser.add_argument("--rollout-horizon", type=int, default=400)
     parser.add_argument("--rollout-videos", type=int, default=3)
     parser.add_argument("--log-every", type=int, default=1)
