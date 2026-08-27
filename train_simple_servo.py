@@ -42,8 +42,10 @@ class ServoPolicy(nn.Module):
                 nn.Linear(condition_dim, 128), nn.GELU(), nn.Linear(128, 128)
             )
             feature_channels = 64
-        else:
+        elif condition in ("none", "sign_equivariant"):
             feature_channels = 64
+        else:
+            raise ValueError(f"Unknown condition: {condition}")
         self.visual = nn.Sequential(
             nn.Conv2d(feature_channels, 128, 3, padding=1), nn.GELU(),
             nn.Conv2d(128, 128, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(1),
@@ -61,7 +63,10 @@ class ServoPolicy(nn.Module):
             gamma, beta = self.condition_film(structural).chunk(2, dim=1)
             feature = feature * (1.0 + gamma[:, :, None, None]) + beta[:, :, None, None]
         feature = self.visual(feature).flatten(1)
-        return 0.12 * self.head(feature)
+        action = 0.12 * self.head(feature)
+        if self.condition == "sign_equivariant":
+            action = action * structural
+        return action
 
 
 def structural_input(condition, fields, descriptors, signs, physical, configs, device):
@@ -110,7 +115,7 @@ def rollout(model, condition, q_values, targets, signs, device, output_dir, limi
                     structural = torch.from_numpy(field).float().unsqueeze(0).to(device)
                 elif condition == "global_token":
                     structural = torch.from_numpy(sample.global_jacobian).float().unsqueeze(0).to(device)
-                elif condition == "sign_array":
+                elif condition in ("sign_array", "sign_equivariant"):
                     structural = torch.from_numpy(sign).float().unsqueeze(0).to(device)
                 else:
                     structural = None
@@ -129,7 +134,11 @@ def rollout(model, condition, q_values, targets, signs, device, output_dir, limi
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True)
-    parser.add_argument("--condition", required=True, choices=("none", "sign_array", "global_token", "pixel_jacobian"))
+    parser.add_argument(
+        "--condition",
+        required=True,
+        choices=("none", "sign_array", "sign_equivariant", "global_token", "pixel_jacobian"),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=128)
