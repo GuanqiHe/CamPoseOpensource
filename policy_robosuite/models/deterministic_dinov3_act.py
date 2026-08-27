@@ -1,4 +1,4 @@
-"""Deterministic DINOv3+ACT baseline with visual tokens only."""
+"""Deterministic DINOv3+ACT with optional pixel-aligned Jacobian fusion."""
 
 from __future__ import annotations
 
@@ -12,20 +12,42 @@ from .transformer import Transformer
 
 
 class DeterministicDinoACTPolicy(nn.Module):
-    """Map DINOv3 patch tokens directly to a fixed-length action chunk.
+    """Map DINOv3 patch tokens to a fixed-length action chunk.
 
-    The Transformer source contains only dense RGB patch tokens. There are no
-    camera-extrinsics, proprio, Robot ID, CVAE posterior, or latent tokens.
+    Stage 1 keeps the exact visual-only architecture. Stage 2 can enable a
+    matched adapter that fuses a 15-channel pixel Jacobian into the aligned
+    16x16 visual grid. The Transformer still receives exactly 256 spatial
+    tokens; there are no camera-extrinsics, proprio, Robot ID, CVAE posterior,
+    or latent tokens.
     """
 
     def __init__(self, args):
         super().__init__()
         self.chunk_size = args.chunk_size
+        self.condition = getattr(args, "condition", "none")
+        self.matched_jacobian_adapter = bool(
+            getattr(args, "matched_jacobian_adapter", False)
+        )
+        if self.condition not in ("none", "pixel_jacobian"):
+            raise ValueError(f"Unknown condition: {self.condition}")
+        if self.condition == "pixel_jacobian" and not self.matched_jacobian_adapter:
+            raise ValueError(
+                "pixel_jacobian requires matched_jacobian_adapter=True"
+            )
         self.backbone = FrozenDinoV3Backbone(
             model_path=args.dinov3_model_path,
             hidden_dim=args.hidden_dim,
             num_cameras=1,
         )
+        if self.matched_jacobian_adapter:
+            self.jacobian_projection = nn.Sequential(
+                nn.Conv2d(15, args.hidden_dim, kernel_size=1),
+                nn.GELU(),
+                nn.Conv2d(args.hidden_dim, args.hidden_dim, kernel_size=1),
+            )
+            self.spatial_fusion = nn.Linear(
+                2 * args.hidden_dim, args.hidden_dim
+            )
         self.transformer = Transformer(
             d_model=args.hidden_dim,
             dropout=args.dropout,
@@ -51,6 +73,35 @@ class DeterministicDinoACTPolicy(nn.Module):
         if image.ndim == 4:
             image = image.unsqueeze(1)
         visual_features, visual_positions = self.backbone(image)
+        if self.matched_jacobian_adapter:
+            jacobian = data.get("pixel_jacobian")
+            if self.condition == "pixel_jacobian":
+                if jacobian is None:
+                    raise ValueError(
+                        "pixel_jacobian condition requires pixel_jacobian input"
+                    )
+            else:
+                jacobian = torch.zeros(
+                    image.shape[0],
+                    15,
+                    16,
+                    16,
+                    device=visual_features.device,
+                    dtype=visual_features.dtype,
+                )
+            jacobian_features = self.jacobian_projection(
+                jacobian.to(dtype=visual_features.dtype)
+            )
+            jacobian_features = jacobian_features.flatten(2).transpose(1, 2)
+            if jacobian_features.shape != visual_features.shape:
+                raise ValueError(
+                    "Pixel Jacobian and DINOv3 grids are not aligned: "
+                    f"{tuple(jacobian_features.shape)} vs "
+                    f"{tuple(visual_features.shape)}"
+                )
+            visual_features = self.spatial_fusion(
+                torch.cat([visual_features, jacobian_features], dim=-1)
+            )
         queries = repeat(
             self.action_queries.weight,
             "q d -> b q d",
