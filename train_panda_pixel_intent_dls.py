@@ -93,6 +93,16 @@ def overlay_dataset_features(
     )
 
 
+def marker_pixel_error(image: np.ndarray) -> np.ndarray:
+    green = (image[..., 1] > 240) & (image[..., 0] < 20) & (image[..., 2] < 20)
+    magenta = (image[..., 0] > 240) & (image[..., 1] < 20) & (image[..., 2] > 240)
+    if not green.any() or not magenta.any():
+        raise ValueError("Both visual-servo markers must be visible")
+    green_yx = np.argwhere(green).mean(axis=0)
+    magenta_yx = np.argwhere(magenta).mean(axis=0)
+    return (green_yx[::-1] - magenta_yx[::-1]).astype(np.float32)
+
+
 def load_data(cache_path: str, raw_path: str):
     images, cube_pixels, eef_pixels, demo_indexes = [], [], [], []
     with h5py.File(cache_path, "r") as cache, h5py.File(raw_path, "r") as raw:
@@ -157,6 +167,7 @@ def rollout(
     horizon,
     output_dir,
     feature_overlay=False,
+    marker_detector=False,
 ):
     env = build_env(raw_path)
     intrinsic = get_camera_intrinsic_matrix(env.sim, "agentview", 256, 256)
@@ -165,7 +176,8 @@ def rollout(
     qvel_indexes = np.asarray(env.robots[0]._ref_joint_vel_indexes)
     output_dir.mkdir(parents=True, exist_ok=True)
     results = []
-    model.eval()
+    if model is not None:
+        model.eval()
     try:
         for config_id, signs in signs_by_config.items():
             signs = np.asarray(signs, dtype=np.float64)
@@ -190,9 +202,12 @@ def rollout(
                         image = draw_feature_markers(image, cube_pixel, eef_pixel)
                     if seed == 0:
                         frames.append(image)
-                    tensor = torch.from_numpy(image).permute(2, 0, 1).float().div(255).unsqueeze(0).to(device)
-                    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                        predicted_error = model(tensor)["pixel_error"][0].float().cpu().numpy()
+                    if marker_detector:
+                        predicted_error = marker_pixel_error(image)
+                    else:
+                        tensor = torch.from_numpy(image).permute(2, 0, 1).float().div(255).unsqueeze(0).to(device)
+                        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                            predicted_error = model(tensor)["pixel_error"][0].float().cpu().numpy()
                     true_error = cube_pixel - eef_pixel
                     true_norm = float(np.linalg.norm(true_error))
                     trace.append(
