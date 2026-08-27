@@ -11,6 +11,7 @@ from action_jacobian.simple_servo import (
     keypoints,
     make_sample,
     oracle_action,
+    sample_state,
     world_to_pixel,
 )
 
@@ -47,6 +48,15 @@ class SimpleServoTest(unittest.TestCase):
         flipped = make_sample(q, target, OOD_SIGNS[-1]).pixel_jacobian
         np.testing.assert_allclose(positive[:6], -flipped[:6], atol=1e-6)
         np.testing.assert_array_equal(positive[6], flipped[6])
+
+    def test_sampled_targets_are_oracle_reachable(self):
+        from action_jacobian.simple_servo import rollout_oracle
+
+        rng = np.random.default_rng(7)
+        for _ in range(50):
+            q, target = sample_state(rng)
+            success, _, _ = rollout_oracle(q, target, OOD_SIGNS[-1])
+            self.assertTrue(success)
 
 
 if __name__ == "__main__":

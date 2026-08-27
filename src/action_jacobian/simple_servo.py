@@ -147,12 +147,18 @@ def make_sample(q: np.ndarray, target: np.ndarray, signs: np.ndarray) -> ServoSa
 
 def sample_state(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     q = rng.uniform([-1.25, -1.2, -1.2], [1.25, 1.2, 1.2]).astype(np.float32)
-    eef = keypoints(q)[-1]
     for _ in range(100):
-        offset = rng.uniform(-0.7, 0.7, size=2).astype(np.float32)
-        target = eef + offset
+        q_goal = np.clip(
+            q + rng.uniform(-0.55, 0.55, size=3),
+            [-1.25, -1.2, -1.2],
+            [1.25, 1.2, 1.2],
+        ).astype(np.float32)
+        target = keypoints(q_goal)[-1]
         pixel = world_to_pixel(target)
-        if np.linalg.norm(offset) >= 0.2 and np.all((pixel >= 5) & (pixel <= 58)):
+        initial_error = np.linalg.norm(
+            world_to_pixel(target) - world_to_pixel(keypoints(q)[-1])
+        )
+        if 3.0 <= initial_error <= 10.0 and np.all((pixel >= 5) & (pixel <= 58)):
             return q, target
     raise RuntimeError("Failed to sample a visible target")
 
