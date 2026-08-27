@@ -17,7 +17,7 @@ import visualize_equivalent_urdf_unit_test as trajectory_visualization
 from equivalent_panda_configs import SIGN_DR_TRAIN_CONFIG_SPECS
 from generate_equivalent_urdf_unit_test import _write_variant_dataset
 from play_dataset import create_replay_env_from_dataset
-from policy_robosuite.pixel_action_jacobian import compute_pixel_action_jacobian
+from action_jacobian.representation import compute_pixel_action_jacobian
 
 
 CANONICAL_ID = "sign_train_00"

@@ -11,7 +11,7 @@ import numpy as np
 
 from equivalent_panda_configs import CONFIG_SPECS, get_validation_config_specs
 from play_dataset import create_replay_env_from_dataset
-from policy_robosuite.pixel_action_jacobian import (
+from action_jacobian.representation import (
     compute_pixel_action_jacobian,
     finite_difference_pixel_action_jacobian,
 )

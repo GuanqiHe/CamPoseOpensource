@@ -16,6 +16,7 @@ import os
 import random
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -28,15 +29,19 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 import robosuite as suite
-from models.deterministic_dinov3_act import DeterministicDinoACTPolicy
-from pixel_action_jacobian import compute_pixel_action_jacobian
-from pixel_jacobian_dataset import (
+
+REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from action_jacobian.dataset import (
     GLOBAL_JACOBIAN_DIM,
     JointFlipPairedDataset,
     JointFlipSource,
     PairedPhysicalBatchSampler,
     global_jacobian_descriptor,
 )
+from action_jacobian.models.policy import DeterministicDinoACTPolicy
+from action_jacobian.representation import compute_pixel_action_jacobian
 from robosuite.wrappers.action_wrapper import wrap_env_action_space
 
 
@@ -56,7 +61,7 @@ def sha256_file(path: str) -> str:
 
 
 def git_commit() -> str:
-    repo = str(Path(__file__).resolve().parents[1])
+    repo = str(REPO_ROOT)
     return subprocess.check_output(
         ["git", "-C", repo, "rev-parse", "HEAD"], text=True
     ).strip()
