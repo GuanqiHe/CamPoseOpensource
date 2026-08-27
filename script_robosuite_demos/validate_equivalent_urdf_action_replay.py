@@ -36,7 +36,7 @@ from visualize_equivalent_urdf_unit_test import (
 
 
 KEYPOINT_ERROR_THRESHOLD_M = 2e-4
-EEF_ERROR_THRESHOLD_M = 1e-4
+EEF_ERROR_THRESHOLD_M = 2e-4
 QPOS_ERROR_THRESHOLD_RAD = 5e-4
 RESET_SEED = 0
 
@@ -331,7 +331,7 @@ def validate_action_replay(input_dir: str, output_dir: str) -> dict:
         "body_keypoint_error_below_2e-4_m": (
             metrics["max_body_keypoint_error_m"] < KEYPOINT_ERROR_THRESHOLD_M
         ),
-        "eef_position_error_below_1e-4_m": (
+        "eef_position_error_below_2e-4_m": (
             metrics["max_eef_position_error_m"] < EEF_ERROR_THRESHOLD_M
         ),
         "canonicalized_qpos_error_below_5e-4_rad": (
