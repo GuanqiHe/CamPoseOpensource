@@ -85,9 +85,9 @@ def load_sign_dr_inputs(
         source.demo_names
     ):
         raise ValueError("Manifest demos do not exactly cover the cache")
-    if list(design["train"]) != manifest["train_configs"]:
+    if design["train"] != manifest["train_configs"]:
         raise ValueError("Manifest training configurations do not match design")
-    if list(design["ood"]) != manifest["ood_configs"]:
+    if design["ood"] != manifest["ood_configs"]:
         raise ValueError("Manifest OOD configurations do not match design")
 
     train_signs = {
