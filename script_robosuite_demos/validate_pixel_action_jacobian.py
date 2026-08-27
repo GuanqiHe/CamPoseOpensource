@@ -9,7 +9,7 @@ import os
 import h5py
 import numpy as np
 
-from equivalent_panda_configs import CONFIG_SPECS  # registers robot classes
+from equivalent_panda_configs import CONFIG_SPECS, get_validation_config_specs
 from play_dataset import create_replay_env_from_dataset
 from policy_robosuite.pixel_action_jacobian import (
     compute_pixel_action_jacobian,
@@ -46,10 +46,12 @@ def validate(
     dataset_dir: str,
     frames_per_demo: int,
     epsilon: float,
+    config_specs: dict[str, dict] | None = None,
 ) -> dict:
+    config_specs = CONFIG_SPECS if config_specs is None else config_specs
     dataset_paths = {
         config_id: os.path.join(dataset_dir, f"{config_id}_joint_delta.hdf5")
-        for config_id in CONFIG_SPECS
+        for config_id in config_specs
     }
     canonical_path = dataset_paths["cfg0"]
     errors = []
@@ -105,7 +107,7 @@ def validate(
     for config_id, dataset_path in dataset_paths.items():
         env, _, _ = create_replay_env_from_dataset(dataset_path)
         env.reset()
-        signs = np.asarray(CONFIG_SPECS[config_id]["joint_signs"])
+        signs = np.asarray(config_specs[config_id]["joint_signs"])
         for demo_name in _demo_names(dataset_path):
             states = _load_states(dataset_path, demo_name)
             frame_index = int(_frame_indexes(len(states), frames_per_demo)[0])
@@ -151,11 +153,17 @@ def main() -> None:
     parser.add_argument("--frames-per-demo", type=int, default=3)
     parser.add_argument("--epsilon", type=float, default=1e-5)
     parser.add_argument("--output-json")
+    parser.add_argument(
+        "--config-set",
+        choices=("legacy", "sign-train", "sign-ood"),
+        default="legacy",
+    )
     args = parser.parse_args()
     metrics = validate(
         os.path.abspath(os.path.expanduser(args.dataset_dir)),
         args.frames_per_demo,
         args.epsilon,
+        get_validation_config_specs(args.config_set),
     )
     output = json.dumps(metrics, indent=2, sort_keys=True)
     print(output)

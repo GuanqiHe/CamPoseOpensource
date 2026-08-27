@@ -11,7 +11,7 @@ import h5py
 import imageio.v2 as imageio
 import numpy as np
 
-from equivalent_panda_configs import CONFIG_SPECS  # noqa: F401: registers robot classes
+from equivalent_panda_configs import CONFIG_SPECS, get_validation_config_specs
 from play_dataset import create_replay_env_from_dataset
 from robosuite.utils.camera_utils import (
     get_camera_transform_matrix,
@@ -55,7 +55,15 @@ def _render_state(env, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nd
     return frame, points, pixels
 
 
-def _draw_action_panel(frame: np.ndarray, config_id: str, action: np.ndarray, pixels: np.ndarray, scale: float) -> np.ndarray:
+def _draw_action_panel(
+    frame: np.ndarray,
+    config_id: str,
+    action: np.ndarray,
+    pixels: np.ndarray,
+    scale: float,
+    config_specs: dict[str, dict] | None = None,
+) -> np.ndarray:
+    config_specs = CONFIG_SPECS if config_specs is None else config_specs
     # 352 px total height is codec-friendly (divisible by 16).
     canvas = np.zeros((FRAME_SIZE + 96, FRAME_SIZE, 3), dtype=np.uint8)
     canvas[:FRAME_SIZE] = frame
@@ -64,7 +72,10 @@ def _draw_action_panel(frame: np.ndarray, config_id: str, action: np.ndarray, pi
         cv2.circle(canvas, (int(col), int(row)), 6, (0, 0, 0), 1, lineType=cv2.LINE_AA)
 
     cv2.rectangle(canvas, (0, 0), (FRAME_SIZE - 1, 25), (0, 0, 0), -1)
-    sign_text = "".join("+" if value > 0 else "-" for value in CONFIG_SPECS[config_id]["joint_signs"])
+    sign_text = "".join(
+        "+" if value > 0 else "-"
+        for value in config_specs[config_id]["joint_signs"]
+    )
     cv2.putText(canvas, f"{config_id}  S={sign_text}", (7, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA)
 
     origin_y = FRAME_SIZE + 43
@@ -103,7 +114,12 @@ def _load_dataset(dataset_path: str):
     return demos
 
 
-def visualize_unit_test(input_dir: str, output_dir: str) -> None:
+def visualize_unit_test(
+    input_dir: str,
+    output_dir: str,
+    config_specs: dict[str, dict] | None = None,
+) -> dict:
+    config_specs = CONFIG_SPECS if config_specs is None else config_specs
     input_dir = os.path.abspath(os.path.expanduser(input_dir))
     output_dir = os.path.abspath(os.path.expanduser(output_dir))
     os.makedirs(output_dir, exist_ok=True)
@@ -111,11 +127,11 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
 
     datasets = {
         config_id: _load_dataset(os.path.join(dataset_dir, f"{config_id}_joint_delta.hdf5"))
-        for config_id in CONFIG_SPECS
+        for config_id in config_specs
     }
 
     metrics = {
-        "num_configs": len(CONFIG_SPECS),
+        "num_configs": len(config_specs),
         "num_trajectories_per_config": len(datasets["cfg0"]),
         "body_keypoints": BODY_NAMES + ["eef"],
         "camera": CAMERA_NAME,
@@ -138,14 +154,14 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
         trajectory_length = next(iter(lengths.values()))
         action_scale = max(
             float(np.max(np.abs(datasets[config_id][demo_name]["actions"][:, :7])))
-            for config_id in CONFIG_SPECS
+            for config_id in config_specs
         )
         action_scale = max(action_scale, 1e-6)
 
-        rendered = {config_id: [] for config_id in CONFIG_SPECS}
-        keypoints = {config_id: [] for config_id in CONFIG_SPECS}
-        pixels = {config_id: [] for config_id in CONFIG_SPECS}
-        for config_id in CONFIG_SPECS:
+        rendered = {config_id: [] for config_id in config_specs}
+        keypoints = {config_id: [] for config_id in config_specs}
+        pixels = {config_id: [] for config_id in config_specs}
+        for config_id in config_specs:
             # robosuite's OSMesa renderer does not make its GL context current
             # on every frame. Keep only one live context so cross-model pixel
             # comparisons cannot be contaminated by a later-created context.
@@ -173,7 +189,7 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
         trajectory_rgb_error_count = 0
         trajectory_rgb_error_gt_5_count = 0
         worst_diff = None
-        for config_id, spec in CONFIG_SPECS.items():
+        for config_id, spec in config_specs.items():
             point_error = np.linalg.norm(keypoints[config_id] - canonical_points, axis=-1)
             max_keypoint_error = max(max_keypoint_error, float(np.max(point_error)))
             rgb_error = np.abs(rendered[config_id].astype(np.int16) - canonical_frames.astype(np.int16))
@@ -198,7 +214,7 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
         combined_frames = []
         for frame_index in range(trajectory_length):
             panels = []
-            for config_id in CONFIG_SPECS:
+            for config_id in config_specs:
                 panels.append(
                     _draw_action_panel(
                         rendered[config_id][frame_index],
@@ -206,12 +222,13 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
                         datasets[config_id][demo_name]["actions"][frame_index],
                         pixels[config_id][frame_index],
                         action_scale,
+                        config_specs,
                     )
                 )
             combined_frames.append(_tile_config_panels(panels))
 
         video_path = os.path.join(
-            output_dir, f"{demo_name}_{len(CONFIG_SPECS)}_configs.mp4"
+            output_dir, f"{demo_name}_{len(config_specs)}_configs.mp4"
         )
         with imageio.get_writer(video_path, fps=20, codec="libx264", quality=8) as writer:
             for frame in combined_frames:
@@ -231,7 +248,10 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
         )
         imageio.imwrite(os.path.join(output_dir, f"{demo_name}_worst_rgb_diff.png"), diff_review)
 
-        successes = {config_id: datasets[config_id][demo_name]["success"] for config_id in CONFIG_SPECS}
+        successes = {
+            config_id: datasets[config_id][demo_name]["success"]
+            for config_id in config_specs
+        }
         metrics["trajectories"][demo_name] = {
             "length": trajectory_length,
             "success": successes,
@@ -265,11 +285,22 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
     with open(metrics_path, "w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2)
     print(json.dumps(metrics, indent=2))
+    return metrics
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_dir", required=True)
     parser.add_argument("--output_dir", required=True)
+    parser.add_argument(
+        "--config-set",
+        choices=("legacy", "sign-train", "sign-ood"),
+        default="legacy",
+    )
     args = parser.parse_args()
-    visualize_unit_test(args.input_dir, args.output_dir)
+    result = visualize_unit_test(
+        args.input_dir,
+        args.output_dir,
+        get_validation_config_specs(args.config_set),
+    )
+    raise SystemExit(0 if result["accepted"] else 1)

@@ -118,3 +118,26 @@ def _build_sign_dr_specs(split: str) -> dict[str, dict]:
 
 SIGN_DR_TRAIN_CONFIG_SPECS = _build_sign_dr_specs("train")
 SIGN_DR_OOD_CONFIG_SPECS = _build_sign_dr_specs("ood")
+
+
+def get_validation_config_specs(config_set: str) -> dict[str, dict]:
+    canonical = SIGN_DR_TRAIN_CONFIG_SPECS["sign_train_00"]
+    config_sets = {
+        "legacy": CONFIG_SPECS,
+        "sign-train": {
+            "cfg0": canonical,
+            **{
+                config_id: spec
+                for config_id, spec in SIGN_DR_TRAIN_CONFIG_SPECS.items()
+                if config_id != "sign_train_00"
+            },
+        },
+        "sign-ood": {"cfg0": canonical, **SIGN_DR_OOD_CONFIG_SPECS},
+    }
+    try:
+        return config_sets[config_set]
+    except KeyError as error:
+        raise ValueError(
+            f"Unknown validation config set {config_set!r}; "
+            f"expected one of {tuple(config_sets)}"
+        ) from error

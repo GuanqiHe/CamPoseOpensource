@@ -179,26 +179,24 @@ def run(args: argparse.Namespace) -> dict:
     specs = _unit_test_specs()
     dataset_paths = _derive_datasets(canonical_path, output_dir, specs)
 
-    for module in (
-        trajectory_visualization,
-        action_replay,
-        jacobian_validation,
-    ):
-        module.CONFIG_SPECS = specs
-
     trajectory_visualization.visualize_unit_test(
-        str(output_dir), str(output_dir / "trajectory_visualization")
+        str(output_dir),
+        str(output_dir / "trajectory_visualization"),
+        specs,
     )
     trajectory_metrics = json.loads(
         (output_dir / "trajectory_visualization" / "validation.json").read_text()
     )
     replay_metrics = action_replay.validate_action_replay(
-        str(output_dir), str(output_dir / "action_replay")
+        str(output_dir),
+        str(output_dir / "action_replay"),
+        specs,
     )
     jacobian_metrics = jacobian_validation.validate(
         str(output_dir / "datasets"),
         frames_per_demo=args.frames_per_demo,
         epsilon=args.epsilon,
+        config_specs=specs,
     )
     (output_dir / "jacobian_validation.json").write_text(
         json.dumps(jacobian_metrics, indent=2, sort_keys=True)

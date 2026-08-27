@@ -18,7 +18,7 @@ import h5py
 import imageio.v2 as imageio
 import numpy as np
 
-from equivalent_panda_configs import CONFIG_SPECS  # registers robot classes
+from equivalent_panda_configs import CONFIG_SPECS, get_validation_config_specs
 from play_dataset import create_replay_env_from_dataset
 from robosuite.utils.camera_utils import (
     get_camera_transform_matrix,
@@ -154,6 +154,7 @@ def _replay_demo(dataset_path: str, demo_name: str) -> ReplayResult:
 
 def _trajectory_metrics(
     replays: dict[str, ReplayResult],
+    config_specs: dict[str, dict],
 ) -> tuple[
     dict[str, dict[str, float | bool | int | None]],
     float,
@@ -173,7 +174,7 @@ def _trajectory_metrics(
                 f"Unpaired replay shape for {config_id}: "
                 f"{replay.keypoints.shape} != {canonical.keypoints.shape}"
             )
-        signs = np.asarray(CONFIG_SPECS[config_id]["joint_signs"])
+        signs = np.asarray(config_specs[config_id]["joint_signs"])
         keypoint_error = np.linalg.norm(
             replay.keypoints - canonical.keypoints,
             axis=-1,
@@ -210,6 +211,7 @@ def _write_video(
     demo_name: str,
     replays: dict[str, ReplayResult],
     actions_by_config: dict[str, np.ndarray],
+    config_specs: dict[str, dict],
 ) -> str:
     num_frames = len(replays["cfg0"].frames)
     action_scale = max(
@@ -220,7 +222,7 @@ def _write_video(
     combined_frames = []
     for frame_index in range(num_frames):
         panels = []
-        for config_id in CONFIG_SPECS:
+        for config_id in config_specs:
             action = (
                 np.zeros(8, dtype=np.float64)
                 if frame_index == 0
@@ -233,13 +235,14 @@ def _write_video(
                     action,
                     replays[config_id].pixels[frame_index],
                     action_scale,
+                    config_specs,
                 )
             )
         combined_frames.append(_tile_config_panels(panels))
 
     video_path = os.path.join(
         output_dir,
-        f"{demo_name}_action_replay_{len(CONFIG_SPECS)}_configs.mp4",
+        f"{demo_name}_action_replay_{len(config_specs)}_configs.mp4",
     )
     with imageio.get_writer(video_path, fps=20, codec="libx264", quality=8) as writer:
         for frame in combined_frames:
@@ -254,21 +257,26 @@ def _write_video(
     return os.path.basename(video_path)
 
 
-def validate_action_replay(input_dir: str, output_dir: str) -> dict:
+def validate_action_replay(
+    input_dir: str,
+    output_dir: str,
+    config_specs: dict[str, dict] | None = None,
+) -> dict:
+    config_specs = CONFIG_SPECS if config_specs is None else config_specs
     input_dir = os.path.abspath(os.path.expanduser(input_dir))
     output_dir = os.path.abspath(os.path.expanduser(output_dir))
     os.makedirs(output_dir, exist_ok=True)
     dataset_dir = os.path.join(input_dir, "datasets")
     dataset_paths = {
         config_id: os.path.join(dataset_dir, f"{config_id}_joint_delta.hdf5")
-        for config_id in CONFIG_SPECS
+        for config_id in config_specs
     }
     demo_names = _demo_names(dataset_paths["cfg0"])
 
     metrics = {
         "validation_mode": "controller action replay",
         "input_data_modified": False,
-        "num_configs": len(CONFIG_SPECS),
+        "num_configs": len(config_specs),
         "num_trajectories_per_config": len(demo_names),
         "body_keypoints": BODY_NAMES + ["eef"],
         "trajectories": {},
@@ -292,12 +300,13 @@ def validate_action_replay(input_dir: str, output_dir: str) -> dict:
             max_eef_error,
             max_qpos_error,
             success_steps_match,
-        ) = _trajectory_metrics(replays)
+        ) = _trajectory_metrics(replays, config_specs)
         video = _write_video(
             output_dir,
             demo_name,
             replays,
             actions_by_config,
+            config_specs,
         )
         all_successful = all(result.success for result in replays.values())
         metrics["trajectories"][demo_name] = {
@@ -350,6 +359,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_dir", required=True)
     parser.add_argument("--output_dir", required=True)
+    parser.add_argument(
+        "--config-set",
+        choices=("legacy", "sign-train", "sign-ood"),
+        default="legacy",
+    )
     args = parser.parse_args()
-    result = validate_action_replay(args.input_dir, args.output_dir)
+    result = validate_action_replay(
+        args.input_dir,
+        args.output_dir,
+        get_validation_config_specs(args.config_set),
+    )
     raise SystemExit(0 if result["accepted"] else 1)
