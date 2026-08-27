@@ -174,6 +174,7 @@ def rollout(
                 env.reset()
                 env.set_init_action()
                 frames = []
+                trace = []
                 for step in range(horizon):
                     image = render_agentview(env)
                     cube_pixel = project(
@@ -193,6 +194,17 @@ def rollout(
                         predicted_error = model(tensor)["pixel_error"][0].float().cpu().numpy()
                     true_error = cube_pixel - eef_pixel
                     true_norm = float(np.linalg.norm(true_error))
+                    trace.append(
+                        {
+                            "step": step,
+                            "true_error": true_error.tolist(),
+                            "predicted_error": predicted_error.tolist(),
+                            "true_norm": true_norm,
+                            "prediction_error_norm": float(
+                                np.linalg.norm(predicted_error - true_error)
+                            ),
+                        }
+                    )
                     if true_norm <= 5.0:
                         break
                     canonical_jacobian = panda_eef_jacobian(
@@ -203,6 +215,17 @@ def rollout(
                     env.step(np.concatenate([raw_action * signs, [-1.0]]))
                 success = true_norm <= 5.0
                 results.append((config_id, seed, success, true_norm, step))
+                with open(output_dir / f"{config_id}_seed_{seed:02d}.json", "w") as handle:
+                    json.dump(
+                        {
+                            "config_id": config_id,
+                            "seed": seed,
+                            "success": bool(success),
+                            "final_error_px": true_norm,
+                            "trace": trace,
+                        },
+                        handle,
+                    )
                 if seed == 0:
                     imageio.mimsave(
                         output_dir / f"{config_id}_success_{int(success)}.mp4",
