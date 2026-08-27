@@ -25,9 +25,11 @@ import robosuite as suite
 from models.deterministic_dinov3_act import DeterministicDinoACTPolicy
 from pixel_action_jacobian import compute_pixel_action_jacobian
 from pixel_jacobian_dataset import (
+    GLOBAL_JACOBIAN_DIM,
     JointFlipPairedDataset,
     JointFlipSource,
     PairedPhysicalBatchSampler,
+    global_jacobian_descriptor,
 )
 from robosuite.wrappers.action_wrapper import wrap_env_action_space
 
@@ -82,6 +84,14 @@ def model_batch(batch: dict[str, torch.Tensor], condition: str, device):
     }
     if condition == "pixel_jacobian":
         output["pixel_jacobian"] = batch["pixel_jacobian"].to(
+            device, non_blocking=True
+        )
+    elif condition == "global_token":
+        output["global_jacobian"] = batch["global_jacobian"].to(
+            device, non_blocking=True
+        )
+    elif condition == "sign_array":
+        output["global_sign"] = batch["global_sign"].to(
             device, non_blocking=True
         )
     return output
@@ -200,7 +210,7 @@ def rollout_success(
                     .unsqueeze(0).to(device)
                 )
                 inputs = {"image": image_tensor}
-                if condition == "pixel_jacobian":
+                if condition in ("pixel_jacobian", "global_token"):
                     field = compute_pixel_action_jacobian(
                         env, "agentview", grid_height=16, grid_width=16
                     ).field
@@ -209,7 +219,16 @@ def rollout_success(
                         * signs[:, None, None, None]
                     ).reshape(14, 16, 16)
                     field[:14] /= source.jacobian_rms[:, None, None]
-                    inputs["pixel_jacobian"] = torch.from_numpy(field).unsqueeze(0).to(device)
+                    if condition == "pixel_jacobian":
+                        inputs["pixel_jacobian"] = (
+                            torch.from_numpy(field).unsqueeze(0).to(device)
+                        )
+                    else:
+                        inputs["global_jacobian"] = torch.from_numpy(
+                            global_jacobian_descriptor(field)
+                        ).unsqueeze(0).to(device)
+                elif condition == "sign_array":
+                    inputs["global_sign"] = torch.from_numpy(signs).unsqueeze(0).to(device)
                 with torch.inference_mode(), torch.autocast(
                     "cuda", dtype=torch.bfloat16
                 ):
@@ -267,17 +286,42 @@ def train(args: argparse.Namespace) -> dict:
     heldout_signs = {args.heldout_config: np.asarray(HELDOUT_SIGNS[args.heldout_config], dtype=np.float32)}
     stats = fit_action_stats(source, train_signs)
     include_structural = args.condition == "pixel_jacobian"
+    include_global_jacobian = args.condition == "global_token"
+    include_sign_array = args.condition == "sign_array"
     train_set = JointFlipPairedDataset(
-        source, train_signs, args.chunk_size, "train", include_structural, **stats
+        source,
+        train_signs,
+        args.chunk_size,
+        "train",
+        include_structural,
+        include_global_jacobian,
+        include_sign_array,
+        **stats,
     )
     val_set = JointFlipPairedDataset(
-        source, train_signs, args.chunk_size, "val", include_structural, **stats
+        source,
+        train_signs,
+        args.chunk_size,
+        "val",
+        include_structural,
+        include_global_jacobian,
+        include_sign_array,
+        **stats,
     )
     heldout_set = JointFlipPairedDataset(
-        source, heldout_signs, args.chunk_size, "val", include_structural, **stats
+        source,
+        heldout_signs,
+        args.chunk_size,
+        "val",
+        include_structural,
+        include_global_jacobian,
+        include_sign_array,
+        **stats,
     )
     args.action_dim = 8
     args.matched_jacobian_adapter = True
+    args.global_jacobian_dim = GLOBAL_JACOBIAN_DIM
+    args.sign_array_dim = 7
     model = DeterministicDinoACTPolicy(args).to(device)
     optimizer = model.configure_optimizers()
     sampler = PairedPhysicalBatchSampler(
@@ -396,7 +440,11 @@ def main() -> None:
     parser.add_argument("--dinov3-model-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--condition", choices=("none", "pixel_jacobian"), required=True)
+    parser.add_argument(
+        "--condition",
+        choices=("none", "sign_array", "global_token", "pixel_jacobian"),
+        required=True,
+    )
     parser.add_argument("--train-configs", nargs="+", default=["cfg0", "cfg1", "cfg2", "cfg3", "cfg4"])
     parser.add_argument("--heldout-config", choices=("cfg5",), default="cfg5")
     parser.add_argument("--expected-demos", type=int, default=200)

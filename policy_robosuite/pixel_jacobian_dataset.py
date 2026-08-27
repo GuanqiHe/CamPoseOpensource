@@ -12,6 +12,18 @@ from torch.utils.data import Dataset, Sampler
 
 IMAGE_MEAN = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGE_STD = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
+GLOBAL_JACOBIAN_DIM = 30
+
+
+def global_jacobian_descriptor(field: np.ndarray) -> np.ndarray:
+    """Pool a normalized ``[15, H, W]`` Jacobian map without pixel locations."""
+
+    field = np.asarray(field, dtype=np.float32)
+    if field.ndim != 3 or field.shape[0] != 15:
+        raise ValueError(f"Expected [15,H,W] Jacobian field, got {field.shape}")
+    mean = field.mean(axis=(1, 2))
+    rms = np.sqrt(np.mean(np.square(field), axis=(1, 2)))
+    return np.concatenate([mean, rms]).astype(np.float32)
 
 
 class PixelJacobianPairedDataset(Dataset):
@@ -271,6 +283,8 @@ class JointFlipPairedDataset(Dataset):
         chunk_size: int,
         split: str,
         include_structural: bool = True,
+        include_global_jacobian: bool = False,
+        include_sign_array: bool = False,
         action_mean: np.ndarray | None = None,
         action_std: np.ndarray | None = None,
         action_min: np.ndarray | None = None,
@@ -285,6 +299,8 @@ class JointFlipPairedDataset(Dataset):
         self.chunk_size = chunk_size
         self.split = split
         self.include_structural = include_structural
+        self.include_global_jacobian = include_global_jacobian
+        self.include_sign_array = include_sign_array
         self.config_ids = list(config_signs)
         self.joint_signs = np.asarray(
             [config_signs[config_id] for config_id in self.config_ids],
@@ -372,14 +388,21 @@ class JointFlipPairedDataset(Dataset):
             "config_index": torch.tensor(config_index, dtype=torch.long),
             "physical_index": torch.tensor(physical_index, dtype=torch.long),
         }
-        if self.include_structural:
+        if self.include_structural or self.include_global_jacobian:
             jacobian = self.source.canonical_jacobian[physical_index].copy()
             jacobian[:14] = (
                 jacobian[:14].reshape(7, 2, 16, 16)
                 * signs[:, None, None, None]
             ).reshape(14, 16, 16)
             jacobian[:14] /= self.source.jacobian_rms[:, None, None]
-            result["pixel_jacobian"] = torch.from_numpy(jacobian)
+            if self.include_structural:
+                result["pixel_jacobian"] = torch.from_numpy(jacobian)
+            if self.include_global_jacobian:
+                result["global_jacobian"] = torch.from_numpy(
+                    global_jacobian_descriptor(jacobian)
+                )
+        if self.include_sign_array:
+            result["global_sign"] = torch.from_numpy(signs.copy())
         return result
 
     def normalized_l1_bayes_bound(self) -> float:

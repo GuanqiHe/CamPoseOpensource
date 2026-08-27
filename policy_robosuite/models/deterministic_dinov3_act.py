@@ -14,11 +14,11 @@ from .transformer import Transformer
 class DeterministicDinoACTPolicy(nn.Module):
     """Map DINOv3 patch tokens to a fixed-length action chunk.
 
-    Stage 1 keeps the exact visual-only architecture. Stage 2 can enable a
-    matched adapter that fuses a 15-channel pixel Jacobian into the aligned
-    16x16 visual grid. The Transformer still receives exactly 256 spatial
-    tokens; there are no camera-extrinsics, proprio, Robot ID, CVAE posterior,
-    or latent tokens.
+    Stage 1 keeps the exact visual-only architecture. Stage 2 compares a
+    direct sign-array token, a globally pooled Jacobian token, and a matched
+    adapter that fuses a 15-channel Jacobian into the aligned 16x16 grid.
+    Only the two token conditions add one structural token; there are no
+    camera-extrinsics, proprio, Robot ID, CVAE posterior, or latent tokens.
     """
 
     def __init__(self, args):
@@ -28,7 +28,12 @@ class DeterministicDinoACTPolicy(nn.Module):
         self.matched_jacobian_adapter = bool(
             getattr(args, "matched_jacobian_adapter", False)
         )
-        if self.condition not in ("none", "pixel_jacobian"):
+        if self.condition not in (
+            "none",
+            "sign_array",
+            "global_token",
+            "pixel_jacobian",
+        ):
             raise ValueError(f"Unknown condition: {self.condition}")
         if self.condition == "pixel_jacobian" and not self.matched_jacobian_adapter:
             raise ValueError(
@@ -39,7 +44,11 @@ class DeterministicDinoACTPolicy(nn.Module):
             hidden_dim=args.hidden_dim,
             num_cameras=1,
         )
-        if self.matched_jacobian_adapter:
+        self.use_pixel_adapter = self.matched_jacobian_adapter and self.condition in (
+            "none",
+            "pixel_jacobian",
+        )
+        if self.use_pixel_adapter:
             self.jacobian_projection = nn.Sequential(
                 nn.Conv2d(15, args.hidden_dim, kernel_size=1),
                 nn.GELU(),
@@ -48,6 +57,30 @@ class DeterministicDinoACTPolicy(nn.Module):
             self.spatial_fusion = nn.Linear(
                 2 * args.hidden_dim, args.hidden_dim
             )
+        elif self.condition == "global_token":
+            self.global_jacobian_projection = nn.Sequential(
+                nn.Linear(args.global_jacobian_dim, args.hidden_dim),
+                nn.GELU(),
+                nn.Linear(args.hidden_dim, args.hidden_dim),
+                nn.GELU(),
+                nn.Linear(args.hidden_dim, args.hidden_dim),
+            )
+            self.structural_pos_embed = nn.Parameter(
+                torch.zeros(1, 1, args.hidden_dim)
+            )
+            nn.init.normal_(self.structural_pos_embed, std=0.02)
+        elif self.condition == "sign_array":
+            self.sign_array_projection = nn.Sequential(
+                nn.Linear(args.sign_array_dim, args.hidden_dim),
+                nn.GELU(),
+                nn.Linear(args.hidden_dim, args.hidden_dim),
+                nn.GELU(),
+                nn.Linear(args.hidden_dim, args.hidden_dim),
+            )
+            self.structural_pos_embed = nn.Parameter(
+                torch.zeros(1, 1, args.hidden_dim)
+            )
+            nn.init.normal_(self.structural_pos_embed, std=0.02)
         self.transformer = Transformer(
             d_model=args.hidden_dim,
             dropout=args.dropout,
@@ -73,7 +106,7 @@ class DeterministicDinoACTPolicy(nn.Module):
         if image.ndim == 4:
             image = image.unsqueeze(1)
         visual_features, visual_positions = self.backbone(image)
-        if self.matched_jacobian_adapter:
+        if self.use_pixel_adapter:
             jacobian = data.get("pixel_jacobian")
             if self.condition == "pixel_jacobian":
                 if jacobian is None:
@@ -102,6 +135,30 @@ class DeterministicDinoACTPolicy(nn.Module):
             visual_features = self.spatial_fusion(
                 torch.cat([visual_features, jacobian_features], dim=-1)
             )
+        elif self.condition == "global_token":
+            descriptor = data.get("global_jacobian")
+            if descriptor is None:
+                raise ValueError("global_token condition requires global_jacobian input")
+            structural_token = self.global_jacobian_projection(
+                descriptor.to(dtype=visual_features.dtype)
+            ).unsqueeze(1)
+            structural_pos = self.structural_pos_embed.expand(
+                visual_features.shape[0], -1, -1
+            )
+            visual_features = torch.cat([visual_features, structural_token], dim=1)
+            visual_positions = torch.cat([visual_positions, structural_pos], dim=1)
+        elif self.condition == "sign_array":
+            sign_array = data.get("global_sign")
+            if sign_array is None:
+                raise ValueError("sign_array condition requires global_sign input")
+            structural_token = self.sign_array_projection(
+                sign_array.to(dtype=visual_features.dtype)
+            ).unsqueeze(1)
+            structural_pos = self.structural_pos_embed.expand(
+                visual_features.shape[0], -1, -1
+            )
+            visual_features = torch.cat([visual_features, structural_token], dim=1)
+            visual_positions = torch.cat([visual_positions, structural_pos], dim=1)
         queries = repeat(
             self.action_queries.weight,
             "q d -> b q d",
