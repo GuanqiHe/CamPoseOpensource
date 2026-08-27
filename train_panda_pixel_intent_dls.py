@@ -58,6 +58,32 @@ def project(world: np.ndarray, world_to_camera: np.ndarray, intrinsic: np.ndarra
     return _continuous_project(np.asarray(world), world_to_camera, intrinsic).astype(np.float32)
 
 
+def draw_feature_markers(
+    image: np.ndarray,
+    cube_pixel: np.ndarray,
+    eef_pixel: np.ndarray,
+    radius: int = 6,
+) -> np.ndarray:
+    """Render observable visual-servo features without changing scene geometry."""
+    marked = image.copy()
+    yy, xx = np.ogrid[: marked.shape[0], : marked.shape[1]]
+    for point, color in ((cube_pixel, (0, 255, 0)), (eef_pixel, (255, 0, 255))):
+        mask = (xx - point[0]) ** 2 + (yy - point[1]) ** 2 <= radius**2
+        marked[mask] = color
+    return marked
+
+
+def overlay_dataset_features(
+    images: np.ndarray, cube_pixels: np.ndarray, eef_pixels: np.ndarray
+) -> np.ndarray:
+    return np.stack(
+        [
+            draw_feature_markers(image, cube_pixel, eef_pixel)
+            for image, cube_pixel, eef_pixel in zip(images, cube_pixels, eef_pixels)
+        ]
+    )
+
+
 def load_data(cache_path: str, raw_path: str):
     images, cube_pixels, eef_pixels, demo_indexes = [], [], [], []
     with h5py.File(cache_path, "r") as cache, h5py.File(raw_path, "r") as raw:
@@ -113,7 +139,16 @@ def panda_eef_jacobian(env, site_id, qvel_indexes, world_to_camera, intrinsic):
     )
 
 
-def rollout(model, raw_path, signs_by_config, device, seeds, horizon, output_dir):
+def rollout(
+    model,
+    raw_path,
+    signs_by_config,
+    device,
+    seeds,
+    horizon,
+    output_dir,
+    feature_overlay=False,
+):
     env = build_env(raw_path)
     intrinsic = get_camera_intrinsic_matrix(env.sim, "agentview", 256, 256)
     world_to_camera = np.linalg.inv(get_camera_extrinsic_matrix(env.sim, "agentview"))
@@ -133,16 +168,22 @@ def rollout(model, raw_path, signs_by_config, device, seeds, horizon, output_dir
                 frames = []
                 for step in range(horizon):
                     image = render_agentview(env)
+                    cube_pixel = project(
+                        env.sim.data.body_xpos[env.cube_body_id][None],
+                        world_to_camera,
+                        intrinsic,
+                    )[0]
+                    eef_pixel = project(
+                        env.sim.data.site_xpos[site_id][None], world_to_camera, intrinsic
+                    )[0]
+                    if feature_overlay:
+                        image = draw_feature_markers(image, cube_pixel, eef_pixel)
                     if seed == 0:
                         frames.append(image)
                     tensor = torch.from_numpy(image).permute(2, 0, 1).float().div(255).unsqueeze(0).to(device)
                     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                         predicted_error = model(tensor)["pixel_error"][0].float().cpu().numpy()
-                    true_error = project(
-                        env.sim.data.body_xpos[env.cube_body_id][None], world_to_camera, intrinsic
-                    )[0] - project(
-                        env.sim.data.site_xpos[site_id][None], world_to_camera, intrinsic
-                    )[0]
+                    true_error = cube_pixel - eef_pixel
                     true_norm = float(np.linalg.norm(true_error))
                     if true_norm <= 5.0:
                         break
@@ -180,12 +221,15 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rollout-seeds", type=int, default=2)
+    parser.add_argument("--feature-overlay", action="store_true")
     args = parser.parse_args()
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device("cuda")
     images, cube_pixels, eef_pixels, demo_indexes = load_data(args.cache, args.raw_dataset)
+    if args.feature_overlay:
+        images = overlay_dataset_features(images, cube_pixels, eef_pixels)
     train_indexes = np.flatnonzero(demo_indexes < 160)
     val_indexes = np.flatnonzero(demo_indexes >= 160)
     labels = np.stack(
@@ -267,6 +311,7 @@ def main():
                 args.rollout_seeds,
                 80,
                 output / f"step_{step}",
+                args.feature_overlay,
             )
             wandb.log(
                 {
