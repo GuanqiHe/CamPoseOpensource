@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from equivalent_panda_configs import CONFIG_SPECS  # registers robot classes
 from play_dataset import create_replay_env_from_dataset
-from policy_robosuite.pixel_action_jacobian import compute_pixel_action_jacobian
+from action_jacobian.representation import compute_pixel_action_jacobian
 from robosuite.utils.camera_utils import (
     get_camera_extrinsic_matrix,
     get_camera_intrinsic_matrix,

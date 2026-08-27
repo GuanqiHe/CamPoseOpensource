@@ -1,0 +1,5 @@
+name: build-cache
+script: build_pixel_jacobian_cache.py
+params:
+  dataset_dir: ???
+  output: ???

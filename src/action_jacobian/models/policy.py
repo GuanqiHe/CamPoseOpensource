@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from einops import repeat
 from torch import nn
 
-from .dinov3_backbone import FrozenDinoV3Backbone
+from .dinov3 import FrozenDinoV3Backbone
 from .transformer import Transformer
 
 

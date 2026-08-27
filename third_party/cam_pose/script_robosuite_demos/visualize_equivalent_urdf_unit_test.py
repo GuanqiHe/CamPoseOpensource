@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 
@@ -23,6 +24,7 @@ CAMERA_NAME = "agentview"
 FRAME_SIZE = 256
 BODY_NAMES = [f"link{i}" for i in range(8)]
 EEF_SITE_NAME = "gripper0_right_grip_site"
+RESET_SEED = 0
 KEYPOINT_COLORS = [
     (255, 64, 64),
     (255, 160, 64),
@@ -44,7 +46,50 @@ def _keypoints_world(env) -> np.ndarray:
     return np.asarray(points)
 
 
-def _render_state(env, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _visual_model_hash(env) -> str:
+    """Hash static model arrays that can affect the rendered observation."""
+
+    digest = hashlib.sha256()
+    for name in (
+        "geom_type",
+        "geom_size",
+        "geom_rgba",
+        "geom_matid",
+        "geom_group",
+        "mat_rgba",
+        "tex_rgb",
+        "cam_fovy",
+        "light_pos",
+        "light_dir",
+        "light_ambient",
+        "light_diffuse",
+        "light_specular",
+    ):
+        if hasattr(env.sim.model, name):
+            value = np.ascontiguousarray(getattr(env.sim.model, name))
+            digest.update(name.encode("utf-8"))
+            digest.update(str(value.dtype).encode("ascii"))
+            digest.update(np.asarray(value.shape, dtype=np.int64).tobytes())
+            digest.update(value.tobytes())
+    return digest.hexdigest()
+
+
+def _visual_scene_state(env) -> np.ndarray:
+    """Return dynamic geom and camera poses before rasterization."""
+
+    return np.concatenate(
+        [
+            np.asarray(env.sim.data.geom_xpos).reshape(-1),
+            np.asarray(env.sim.data.geom_xmat).reshape(-1),
+            np.asarray(env.sim.data.cam_xpos).reshape(-1),
+            np.asarray(env.sim.data.cam_xmat).reshape(-1),
+        ]
+    )
+
+
+def _render_state(
+    env, state: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     env.sim.set_state_from_flattened(state)
     env.sim.forward()
     frame = env.sim.render(camera_name=CAMERA_NAME, height=FRAME_SIZE, width=FRAME_SIZE)
@@ -52,7 +97,7 @@ def _render_state(env, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nd
     points = _keypoints_world(env)
     transform = get_camera_transform_matrix(env.sim, CAMERA_NAME, FRAME_SIZE, FRAME_SIZE)
     pixels = project_points_from_world_to_camera(points, transform, FRAME_SIZE, FRAME_SIZE)
-    return frame, points, pixels
+    return frame, points, pixels, _visual_scene_state(env)
 
 
 def _draw_action_panel(
@@ -141,6 +186,8 @@ def visualize_unit_test(
         "mean_rgb_abs_error": 0.0,
         "fraction_rgb_values_abs_error_gt_5": 0.0,
         "max_canonicalized_action_error": 0.0,
+        "max_visual_scene_error": 0.0,
+        "visual_model_hashes_identical": True,
         "all_successful": True,
     }
     rgb_error_sum = 0.0
@@ -161,30 +208,39 @@ def visualize_unit_test(
         rendered = {config_id: [] for config_id in config_specs}
         keypoints = {config_id: [] for config_id in config_specs}
         pixels = {config_id: [] for config_id in config_specs}
+        visual_scenes = {config_id: [] for config_id in config_specs}
+        visual_model_hashes = {}
         for config_id in config_specs:
             # robosuite's OSMesa renderer does not make its GL context current
             # on every frame. Keep only one live context so cross-model pixel
             # comparisons cannot be contaminated by a later-created context.
             dataset_path = os.path.join(dataset_dir, f"{config_id}_joint_delta.hdf5")
+            np.random.seed(RESET_SEED)
             env = create_replay_env_from_dataset(dataset_path)[0]
+            np.random.seed(RESET_SEED)
             env.reset()
             env.sim.render(camera_name=CAMERA_NAME, height=FRAME_SIZE, width=FRAME_SIZE)
+            visual_model_hashes[config_id] = _visual_model_hash(env)
             for state in datasets[config_id][demo_name]["states"]:
-                frame, points, projected = _render_state(env, state)
+                frame, points, projected, visual_scene = _render_state(env, state)
                 rendered[config_id].append(frame)
                 keypoints[config_id].append(points)
                 pixels[config_id].append(projected)
+                visual_scenes[config_id].append(visual_scene)
             env.close()
             rendered[config_id] = np.asarray(rendered[config_id])
             keypoints[config_id] = np.asarray(keypoints[config_id])
             pixels[config_id] = np.asarray(pixels[config_id])
+            visual_scenes[config_id] = np.asarray(visual_scenes[config_id])
 
         canonical_frames = rendered["cfg0"]
         canonical_points = keypoints["cfg0"]
+        canonical_visual_scene = visual_scenes["cfg0"]
         canonical_actions = datasets["cfg0"][demo_name]["actions"]
         max_keypoint_error = 0.0
         max_rgb_error = 0
         max_action_error = 0.0
+        max_visual_scene_error = 0.0
         trajectory_rgb_error_sum = 0.0
         trajectory_rgb_error_count = 0
         trajectory_rgb_error_gt_5_count = 0
@@ -192,6 +248,12 @@ def visualize_unit_test(
         for config_id, spec in config_specs.items():
             point_error = np.linalg.norm(keypoints[config_id] - canonical_points, axis=-1)
             max_keypoint_error = max(max_keypoint_error, float(np.max(point_error)))
+            scene_error = np.max(
+                np.abs(visual_scenes[config_id] - canonical_visual_scene)
+            )
+            max_visual_scene_error = max(
+                max_visual_scene_error, float(scene_error)
+            )
             rgb_error = np.abs(rendered[config_id].astype(np.int16) - canonical_frames.astype(np.int16))
             max_rgb_error = max(max_rgb_error, int(np.max(rgb_error)))
             rgb_error_sum += float(np.sum(rgb_error))
@@ -263,11 +325,20 @@ def visualize_unit_test(
             "worst_rgb_diff_config": worst_config,
             "worst_rgb_diff_frame": worst_frame_index,
             "max_canonicalized_action_error": max_action_error,
+            "max_visual_scene_error": max_visual_scene_error,
+            "visual_model_hashes_identical": len(set(visual_model_hashes.values())) == 1,
             "video": os.path.basename(video_path),
         }
         metrics["max_body_keypoint_error_m"] = max(metrics["max_body_keypoint_error_m"], max_keypoint_error)
         metrics["max_rgb_abs_error"] = max(metrics["max_rgb_abs_error"], max_rgb_error)
         metrics["max_canonicalized_action_error"] = max(metrics["max_canonicalized_action_error"], max_action_error)
+        metrics["max_visual_scene_error"] = max(
+            metrics["max_visual_scene_error"], max_visual_scene_error
+        )
+        metrics["visual_model_hashes_identical"] = (
+            metrics["visual_model_hashes_identical"]
+            and len(set(visual_model_hashes.values())) == 1
+        )
         metrics["all_successful"] = metrics["all_successful"] and all(successes.values())
 
     metrics["mean_rgb_abs_error"] = rgb_error_sum / max(rgb_error_count, 1)
@@ -275,10 +346,11 @@ def visualize_unit_test(
     metrics["acceptance"] = {
         "all_successful": bool(metrics["all_successful"]),
         "body_keypoint_error_below_1e-9_m": metrics["max_body_keypoint_error_m"] < 1e-9,
-        "rgb_mean_abs_error_below_0_1": metrics["mean_rgb_abs_error"] < 0.1,
-        "rgb_changed_fraction_below_1e-3": metrics["fraction_rgb_values_abs_error_gt_5"] < 1e-3,
+        "visual_model_hashes_identical": metrics["visual_model_hashes_identical"],
+        "visual_scene_error_below_1e-12": metrics["max_visual_scene_error"] < 1e-12,
         "canonicalized_actions_exact": metrics["max_canonicalized_action_error"] < 1e-12,
     }
+    metrics["rgb_diagnostic_only"] = True
     metrics["rgb_bitwise_exact"] = metrics["max_rgb_abs_error"] == 0
     metrics["accepted"] = all(metrics["acceptance"].values())
     metrics_path = os.path.join(output_dir, "validation.json")

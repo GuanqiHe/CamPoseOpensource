@@ -1,6 +1,6 @@
-[submodule "maniskill_source"]
-	path = maniskill_source
+[submodule "third_party/maniskill"]
+	path = third_party/maniskill
 	url = git@github.com:ripl/ManiSkill.git
-[submodule "robosuite_source"]
-	path = robosuite_source
+[submodule "third_party/robosuite"]
+	path = third_party/robosuite
 	url = git@github.com:ripl/robosuite.git

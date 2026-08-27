@@ -98,8 +98,8 @@ def _register_sign_config(config_id: str, signs: list[int]):
 
 
 _SIGN_DR_DESIGN_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "experiment_specs"
+    Path(__file__).resolve().parents[3]
+    / "configs"
     / "joint_sign_dr_v1.json"
 )
 _SIGN_DR_DESIGN = json.loads(_SIGN_DR_DESIGN_PATH.read_text())

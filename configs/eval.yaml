@@ -1,0 +1,32 @@
+defaults:
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+  - _self_
+
+paths:
+  checkpoint: ???
+  cache: ???
+  dataset: ???
+  design: configs/joint_sign_dr_v1.json
+  manifest: ???
+  dinov3_model: ???
+  output_dir: null
+
+config_id: ???
+
+evaluation:
+  batch_size: 128
+  rollout_seeds: 50
+  rollout_horizon: 400
+  rollout_videos: 3
+  skip_rollout: false
+
+runtime:
+  device: cuda
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
