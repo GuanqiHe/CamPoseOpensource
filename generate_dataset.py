@@ -33,7 +33,7 @@ def main() -> None:
     )
     subprocess.run(
         [sys.executable, str(UPSTREAM_SCRIPTS / STAGES[args.stage]), *forwarded],
-        cwd=UPSTREAM_SCRIPTS,
+        cwd=REPO_ROOT,
         env=environment,
         check=True,
     )
