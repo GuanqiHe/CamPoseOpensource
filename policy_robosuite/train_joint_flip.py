@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Train matched joint-flip policies with episode and configuration splits.
 
-Each run uses the same fixed 160/40 episode split and the same reproducible
-two-configuration-per-physical-frame manifest.  ID validation uses the sampled
-training configurations on the held-out episodes; OOD validation uses cfg5 on
-those same held-out episodes.
+Each run consumes the same precomputed 160/40 episode split and balanced
+two-configuration-per-physical-frame manifest. ID validation uses the eight
+training sign conventions on held-out episodes; OOD validation uses the eight
+disjoint OOD sign conventions on those same episodes.
 """
 
 from __future__ import annotations
@@ -35,13 +35,9 @@ from pixel_jacobian_dataset import (
     JointFlipPairedDataset,
     JointFlipSource,
     PairedPhysicalBatchSampler,
-    build_joint_flip_manifest,
     global_jacobian_descriptor,
 )
 from robosuite.wrappers.action_wrapper import wrap_env_action_space
-
-
-HELDOUT_SIGNS = {"cfg5": (-1, 1, -1, 1, 1, 1, 1)}
 
 
 def set_seed(seed: int) -> None:
@@ -64,6 +60,45 @@ def git_commit() -> str:
     return subprocess.check_output(
         ["git", "-C", repo, "rev-parse", "HEAD"], text=True
     ).strip()
+
+
+def load_sign_dr_inputs(
+    design_path: str,
+    manifest_path: str,
+    source: JointFlipSource,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict]:
+    with open(design_path, encoding="utf-8") as handle:
+        design = json.load(handle)
+    with open(manifest_path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+
+    design_sha256 = sha256_file(design_path)
+    if manifest["design_sha256"] != design_sha256:
+        raise ValueError("Manifest design SHA256 does not match --design")
+    if manifest["num_physical_steps"] != source.num_physical_steps:
+        raise ValueError("Manifest physical-step count does not match cache")
+    if len(manifest["sampled_train_config_ids_by_physical"]) != source.num_physical_steps:
+        raise ValueError("Manifest config sampling length does not match cache")
+    if set(manifest["train_demo_names"]) & set(manifest["val_demo_names"]):
+        raise ValueError("Train and validation demos overlap")
+    if set(manifest["train_demo_names"] + manifest["val_demo_names"]) != set(
+        source.demo_names
+    ):
+        raise ValueError("Manifest demos do not exactly cover the cache")
+    if list(design["train"]) != manifest["train_configs"]:
+        raise ValueError("Manifest training configurations do not match design")
+    if list(design["ood"]) != manifest["ood_configs"]:
+        raise ValueError("Manifest OOD configurations do not match design")
+
+    train_signs = {
+        config_id: np.asarray(signs, dtype=np.float32)
+        for config_id, signs in design["train"].items()
+    }
+    ood_signs = {
+        config_id: np.asarray(signs, dtype=np.float32)
+        for config_id, signs in design["ood"].items()
+    }
+    return train_signs, ood_signs, manifest
 
 
 def fit_action_stats(
@@ -296,19 +331,16 @@ def train(args: argparse.Namespace) -> dict:
         expected_demos=args.expected_demos,
         expected_physical_steps=args.expected_physical_steps,
     )
-    train_signs = {
-        config_id: source.cache_config_signs[config_id]
-        for config_id in args.train_configs
-    }
-    heldout_signs = {args.heldout_config: np.asarray(HELDOUT_SIGNS[args.heldout_config], dtype=np.float32)}
-    manifest = build_joint_flip_manifest(
+    train_signs, heldout_signs, manifest = load_sign_dr_inputs(
+        args.design,
+        args.manifest,
         source,
-        args.train_configs,
-        val_demos=args.val_demos,
-        split_seed=args.split_seed,
-        sampling_seed=args.sampling_seed,
-        configs_per_frame=args.configs_per_frame,
     )
+    if args.configs_per_frame != manifest["configs_per_frame"]:
+        raise ValueError(
+            f"--configs-per-frame={args.configs_per_frame} does not match "
+            f"manifest value {manifest['configs_per_frame']}"
+        )
     demo_to_index = {
         demo_name: index for index, demo_name in enumerate(source.demo_names)
     }
@@ -345,7 +377,7 @@ def train(args: argparse.Namespace) -> dict:
         source,
         train_signs,
         train_physical_indexes,
-        manifest["sampled_config_ids_by_physical"],
+        manifest["sampled_train_config_ids_by_physical"],
     )
     include_structural = args.condition == "pixel_jacobian"
     include_global_jacobian = args.condition == "global_token"
@@ -359,7 +391,7 @@ def train(args: argparse.Namespace) -> dict:
         include_global_jacobian=include_global_jacobian,
         include_sign_array=include_sign_array,
         physical_indexes=train_physical_indexes,
-        sampled_config_ids_by_physical=manifest["sampled_config_ids_by_physical"],
+        sampled_config_ids_by_physical=manifest["sampled_train_config_ids_by_physical"],
         **stats,
     )
     val_set = JointFlipPairedDataset(
@@ -371,7 +403,7 @@ def train(args: argparse.Namespace) -> dict:
         include_global_jacobian=include_global_jacobian,
         include_sign_array=include_sign_array,
         physical_indexes=val_physical_indexes,
-        sampled_config_ids_by_physical=manifest["sampled_config_ids_by_physical"],
+        sampled_config_ids_by_physical=manifest["sampled_train_config_ids_by_physical"],
         **stats,
     )
     heldout_set = JointFlipPairedDataset(
@@ -412,7 +444,10 @@ def train(args: argparse.Namespace) -> dict:
     config.update(
         git_commit=git_commit(),
         cache_sha256=sha256_file(args.cache),
-        train_configs=args.train_configs,
+        design_sha256=sha256_file(args.design),
+        input_manifest_sha256=sha256_file(args.manifest),
+        train_configs=list(train_signs),
+        heldout_configs=list(heldout_signs),
         train_signs={key: value.tolist() for key, value in train_signs.items()},
         heldout_signs={key: value.tolist() for key, value in heldout_signs.items()},
         train_samples=len(train_set),
@@ -545,6 +580,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", required=True)
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--design", required=True)
+    parser.add_argument("--manifest", required=True)
     parser.add_argument("--dinov3-model-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--run-name", required=True)
@@ -553,16 +590,11 @@ def main() -> None:
         choices=("none", "sign_array", "global_token", "pixel_jacobian"),
         required=True,
     )
-    parser.add_argument("--train-configs", nargs="+", default=["cfg0", "cfg1", "cfg2", "cfg3", "cfg4"])
-    parser.add_argument("--heldout-config", choices=("cfg5",), default="cfg5")
     parser.add_argument("--expected-demos", type=int, default=200)
     parser.add_argument("--expected-physical-steps", type=int, default=17937)
     parser.add_argument("--steps", type=int, default=20000)
     parser.add_argument("--chunk-size", type=int, default=30)
     parser.add_argument("--physical-batch-size", type=int, default=10)
-    parser.add_argument("--val-demos", type=int, default=40)
-    parser.add_argument("--split-seed", type=int, default=20260827)
-    parser.add_argument("--sampling-seed", type=int, default=20260827)
     parser.add_argument("--configs-per-frame", type=int, default=2)
     parser.add_argument("--eval-batch-size", type=int, default=128)
     parser.add_argument("--eval-every", type=int, default=500)
