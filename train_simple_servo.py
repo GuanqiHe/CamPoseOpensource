@@ -35,16 +35,21 @@ class ServoPolicy(nn.Module):
         )
         if condition == "pixel_jacobian":
             self.pixel = nn.Sequential(nn.Conv2d(7, 32, 1), nn.GELU())
-            feature_channels, condition_dim = 96, 0
+            feature_channels = 96
+        elif condition in ("sign_array", "global_token"):
+            condition_dim = {"sign_array": 3, "global_token": 12}[condition]
+            self.condition_film = nn.Sequential(
+                nn.Linear(condition_dim, 128), nn.GELU(), nn.Linear(128, 128)
+            )
+            feature_channels = 64
         else:
             feature_channels = 64
-            condition_dim = {"none": 0, "sign_array": 3, "global_token": 12}[condition]
         self.visual = nn.Sequential(
             nn.Conv2d(feature_channels, 128, 3, padding=1), nn.GELU(),
             nn.Conv2d(128, 128, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(1),
         )
         self.head = nn.Sequential(
-            nn.Linear(128 + condition_dim, 256), nn.GELU(),
+            nn.Linear(128, 256), nn.GELU(),
             nn.Linear(256, 128), nn.GELU(), nn.Linear(128, 3), nn.Tanh(),
         )
 
@@ -52,9 +57,10 @@ class ServoPolicy(nn.Module):
         feature = self.rgb(image)
         if self.condition == "pixel_jacobian":
             feature = torch.cat([feature, self.pixel(structural)], dim=1)
+        elif self.condition in ("sign_array", "global_token"):
+            gamma, beta = self.condition_film(structural).chunk(2, dim=1)
+            feature = feature * (1.0 + gamma[:, :, None, None]) + beta[:, :, None, None]
         feature = self.visual(feature).flatten(1)
-        if self.condition in ("sign_array", "global_token"):
-            feature = torch.cat([feature, structural], dim=1)
         return 0.12 * self.head(feature)
 
 
