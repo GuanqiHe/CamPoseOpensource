@@ -22,6 +22,21 @@ The model conditions are `none`, `sign_array`, `global_token`, and
 `pixel_jacobian`. They share the same RGB, action chunks, episode split,
 optimizer, and evaluation code.
 
+## Setup
+
+Clone with submodules, then create the Python environment from any working
+directory:
+
+```bash
+git clone --recursive <repository-url>
+cd CamPoseOpensource
+bash third_party/cam_pose/setup.sh
+```
+
+The setup script installs the simulator submodules from `third_party/` and all
+runtime dependencies required by the top-level data, training, and evaluation
+entrypoints.
+
 ## Data
 
 Select one Hydra stage and override only its paths:
