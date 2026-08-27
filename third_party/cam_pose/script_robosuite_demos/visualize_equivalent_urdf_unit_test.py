@@ -24,6 +24,7 @@ CAMERA_NAME = "agentview"
 FRAME_SIZE = 256
 BODY_NAMES = [f"link{i}" for i in range(8)]
 EEF_SITE_NAME = "gripper0_right_grip_site"
+RESET_SEED = 0
 KEYPOINT_COLORS = [
     (255, 64, 64),
     (255, 160, 64),
@@ -214,7 +215,9 @@ def visualize_unit_test(
             # on every frame. Keep only one live context so cross-model pixel
             # comparisons cannot be contaminated by a later-created context.
             dataset_path = os.path.join(dataset_dir, f"{config_id}_joint_delta.hdf5")
+            np.random.seed(RESET_SEED)
             env = create_replay_env_from_dataset(dataset_path)[0]
+            np.random.seed(RESET_SEED)
             env.reset()
             env.sim.render(camera_name=CAMERA_NAME, height=FRAME_SIZE, width=FRAME_SIZE)
             visual_model_hashes[config_id] = _visual_model_hash(env)
