@@ -55,7 +55,7 @@ Formal runs require W&B online tracking. Training is never part of unit tests.
 ## Test
 
 ```bash
-python -m unittest discover -s tests -v
+PYTHONPATH=src python -m unittest discover -s tests -v
 python generate_dataset.py stage=validate \
   stage.params.canonical_dataset=/path/to/canonical.hdf5 \
   stage.params.output_dir=/tmp/jacobian-unit-test
