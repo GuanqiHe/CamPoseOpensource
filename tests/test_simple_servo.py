@@ -7,6 +7,7 @@ import numpy as np
 from action_jacobian.simple_servo import (
     OOD_SIGNS,
     TRAIN_SIGNS,
+    damped_least_squares_action,
     eef_pixel_jacobian,
     keypoints,
     make_sample,
@@ -26,6 +27,16 @@ class SimpleServoTest(unittest.TestCase):
             physical_steps.append(signs * action)
         for step in physical_steps[1:]:
             np.testing.assert_allclose(step, physical_steps[0], atol=1e-6)
+
+    def test_fixed_dls_matches_oracle_action(self):
+        q = np.asarray([0.2, -0.4, 0.3], dtype=np.float32)
+        target = np.asarray([1.5, 0.4], dtype=np.float32)
+        for signs in np.concatenate([TRAIN_SIGNS, OOD_SIGNS]):
+            oracle, error = oracle_action(q, target, signs)
+            dls = damped_least_squares_action(
+                error, eef_pixel_jacobian(q, signs)
+            )
+            np.testing.assert_allclose(dls, oracle, atol=1e-7)
 
     def test_eef_jacobian_matches_finite_difference(self):
         q = np.asarray([0.3, -0.5, 0.4], dtype=np.float32)

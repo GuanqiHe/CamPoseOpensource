@@ -68,6 +68,22 @@ def eef_pixel_jacobian(q: np.ndarray, signs: np.ndarray) -> np.ndarray:
     return projection @ point_jacobian(q, 2) @ np.diag(signs)
 
 
+def damped_least_squares_action(
+    pixel_error: np.ndarray,
+    pixel_jacobian: np.ndarray,
+    damping: float = 0.5,
+    max_action: float = 0.12,
+) -> np.ndarray:
+    """Map desired image motion to raw action with a fixed DLS inverse."""
+    pixel_error = np.asarray(pixel_error, dtype=np.float32)
+    pixel_jacobian = np.asarray(pixel_jacobian, dtype=np.float32)
+    inverse = pixel_jacobian.T @ np.linalg.inv(
+        pixel_jacobian @ pixel_jacobian.T
+        + damping * damping * np.eye(2, dtype=np.float32)
+    )
+    return np.clip(inverse @ pixel_error, -max_action, max_action).astype(np.float32)
+
+
 def oracle_action(
     q: np.ndarray,
     target: np.ndarray,
@@ -79,10 +95,7 @@ def oracle_action(
     target_px = world_to_pixel(target)
     error = target_px - eef_px
     jacobian = eef_pixel_jacobian(q, signs)
-    inverse = jacobian.T @ np.linalg.inv(
-        jacobian @ jacobian.T + damping * damping * np.eye(2, dtype=np.float32)
-    )
-    action = np.clip(inverse @ error, -max_action, max_action).astype(np.float32)
+    action = damped_least_squares_action(error, jacobian, damping, max_action)
     return action, error.astype(np.float32)
 
 
