@@ -1,5 +1,7 @@
 defaults:
   - stage: validate
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
   - _self_
 
 hydra:
