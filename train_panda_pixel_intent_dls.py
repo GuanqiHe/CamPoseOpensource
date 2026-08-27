@@ -70,14 +70,15 @@ def draw_feature_markers(
     image: np.ndarray,
     cube_pixel: np.ndarray,
     eef_pixel: np.ndarray,
-    radius: int = 6,
 ) -> np.ndarray:
     """Render observable visual-servo features without changing scene geometry."""
     marked = image.copy()
     yy, xx = np.ogrid[: marked.shape[0], : marked.shape[1]]
-    for point, color in ((cube_pixel, (0, 255, 0)), (eef_pixel, (255, 0, 255))):
-        mask = (xx - point[0]) ** 2 + (yy - point[1]) ** 2 <= radius**2
-        marked[mask] = color
+    cube_radius_sq = (xx - cube_pixel[0]) ** 2 + (yy - cube_pixel[1]) ** 2
+    cube_ring = (cube_radius_sq >= 8**2) & (cube_radius_sq <= 12**2)
+    marked[cube_ring] = (0, 255, 0)
+    eef_disk = (xx - eef_pixel[0]) ** 2 + (yy - eef_pixel[1]) ** 2 <= 4**2
+    marked[eef_disk] = (255, 0, 255)
     return marked
 
 
