@@ -402,6 +402,7 @@ def main() -> None:
     parser.add_argument("--expected-demos", type=int, default=200)
     parser.add_argument("--expected-physical-steps", type=int, default=17937)
     parser.add_argument("--steps", type=int, default=20000)
+    parser.add_argument("--chunk-size", type=int, default=30)
     parser.add_argument("--physical-batch-size", type=int, default=4)
     parser.add_argument("--eval-batch-size", type=int, default=128)
     parser.add_argument("--eval-every", type=int, default=1000)
