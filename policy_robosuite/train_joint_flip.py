@@ -326,6 +326,21 @@ def train(args: argparse.Namespace) -> dict:
     val_physical_indexes = np.flatnonzero(
         np.isin(source.demo_index_by_physical, val_demo_indexes)
     )
+    if not 1 <= args.ood_eval_samples <= len(val_physical_indexes):
+        raise ValueError(
+            "ood_eval_samples must be in [1, val_physical_steps], got "
+            f"{args.ood_eval_samples} for {len(val_physical_indexes)} val steps"
+        )
+    ood_eval_rng = np.random.default_rng(args.ood_eval_seed)
+    ood_eval_physical_indexes = np.sort(
+        ood_eval_rng.choice(
+            val_physical_indexes,
+            size=args.ood_eval_samples,
+            replace=False,
+        )
+    )
+    manifest["ood_eval_seed"] = int(args.ood_eval_seed)
+    manifest["ood_eval_physical_indexes"] = ood_eval_physical_indexes.tolist()
     stats = fit_action_stats(
         source,
         train_signs,
@@ -370,6 +385,17 @@ def train(args: argparse.Namespace) -> dict:
         physical_indexes=val_physical_indexes,
         **stats,
     )
+    heldout_eval_set = JointFlipPairedDataset(
+        source,
+        heldout_signs,
+        args.chunk_size,
+        "val",
+        include_structural=include_structural,
+        include_global_jacobian=include_global_jacobian,
+        include_sign_array=include_sign_array,
+        physical_indexes=ood_eval_physical_indexes,
+        **stats,
+    )
     args.action_dim = 8
     args.matched_jacobian_adapter = True
     args.global_jacobian_dim = GLOBAL_JACOBIAN_DIM
@@ -392,6 +418,8 @@ def train(args: argparse.Namespace) -> dict:
         train_samples=len(train_set),
         val_samples=len(val_set),
         heldout_samples=len(heldout_set),
+        ood_eval_physical_steps=len(ood_eval_physical_indexes),
+        ood_eval_samples=len(heldout_eval_set),
         train_physical_steps=len(train_physical_indexes),
         val_physical_steps=len(val_physical_indexes),
         samples_seen_target=(
@@ -450,7 +478,11 @@ def train(args: argparse.Namespace) -> dict:
                     model, val_set, args.condition, device, args.eval_batch_size
                 )
                 ood_metrics = action_metrics(
-                    model, heldout_set, args.condition, device, args.eval_batch_size
+                    model,
+                    heldout_eval_set,
+                    args.condition,
+                    device,
+                    args.eval_batch_size,
                 )
                 metrics = {
                     "val_id/normalized_action_mae": id_metrics["normalized_action_mae"],
@@ -533,12 +565,14 @@ def main() -> None:
     parser.add_argument("--sampling-seed", type=int, default=20260827)
     parser.add_argument("--configs-per-frame", type=int, default=2)
     parser.add_argument("--eval-batch-size", type=int, default=128)
-    parser.add_argument("--eval-every", type=int, default=1000)
+    parser.add_argument("--eval-every", type=int, default=500)
     parser.add_argument("--rollout-every", type=int, default=5000)
     parser.add_argument("--rollout-seeds", type=int, default=50)
     parser.add_argument("--rollout-horizon", type=int, default=400)
     parser.add_argument("--rollout-videos", type=int, default=3)
-    parser.add_argument("--log-every", type=int, default=20)
+    parser.add_argument("--log-every", type=int, default=1)
+    parser.add_argument("--ood-eval-samples", type=int, default=512)
+    parser.add_argument("--ood-eval-seed", type=int, default=20260827)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--hidden-dim", type=int, default=512)
