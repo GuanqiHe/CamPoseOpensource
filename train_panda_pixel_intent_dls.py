@@ -37,6 +37,7 @@ class PandaPixelIntent(nn.Module):
         super().__init__()
         self.backbone = FrozenDinoV3Backbone(model_path, hidden_dim=256, num_cameras=1)
         self.heatmap_head = nn.Linear(256, 2)
+        self.offset_head = nn.Linear(256, 4)
         centers = torch.stack(
             torch.meshgrid(
                 torch.arange(16, dtype=torch.float32) * 16 + 8,
@@ -50,8 +51,15 @@ class PandaPixelIntent(nn.Module):
     def forward(self, image: torch.Tensor):
         tokens, _ = self.backbone(image.unsqueeze(1))
         logits = self.heatmap_head(tokens).transpose(1, 2)
-        points = logits.softmax(dim=-1) @ self.centers
-        return {"points": points, "pixel_error": points[:, 0] - points[:, 1], "logits": logits}
+        offsets = self.offset_head(tokens).reshape(-1, 256, 2, 2).permute(0, 2, 1, 3)
+        offsets = offsets.tanh() * 8.0
+        candidates = self.centers[None, None] + offsets
+        points = (logits.softmax(dim=-1).unsqueeze(-1) * candidates).sum(dim=2)
+        return {
+            "points": points,
+            "pixel_error": points[:, 0] - points[:, 1],
+            "logits": logits,
+        }
 
 
 def project(world: np.ndarray, world_to_camera: np.ndarray, intrinsic: np.ndarray):
@@ -271,10 +279,14 @@ def main():
         image = torch.from_numpy(images[indexes]).permute(0, 3, 1, 2).float().div(255).to(device)
         result = model(image)
         label = torch.from_numpy(labels[indexes]).to(device)
+        target_points = torch.from_numpy(
+            np.stack([cube_pixels[indexes], eef_pixels[indexes]], axis=1)
+        ).to(device)
         target_error = torch.from_numpy(desired_error[indexes]).to(device)
         heatmap_loss = F.cross_entropy(result["logits"].reshape(-1, 256), label.reshape(-1))
+        point_loss = F.smooth_l1_loss(result["points"], target_points)
         intent_loss = F.smooth_l1_loss(result["pixel_error"], target_error)
-        loss = heatmap_loss + 0.05 * intent_loss
+        loss = heatmap_loss + 0.1 * point_loss + 0.05 * intent_loss
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -282,6 +294,7 @@ def main():
             {
                 "train/loss": float(loss),
                 "train/heatmap_ce": float(heatmap_loss),
+                "train/point_l1_px": float((result["points"] - target_points).abs().mean()),
                 "train/intent_l1_px": float((result["pixel_error"] - target_error).abs().mean()),
                 "samples_seen": step * args.batch_size,
                 "throughput_samples_s": step * args.batch_size / (time.perf_counter() - started),
