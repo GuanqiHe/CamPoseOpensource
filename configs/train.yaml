@@ -1,0 +1,64 @@
+defaults:
+  - method: none
+  - _self_
+
+paths:
+  cache: ???
+  dataset: ???
+  design: configs/joint_sign_dr_v1.json
+  manifest: ???
+  dinov3_model: ???
+  output_dir: ???
+
+run:
+  name: ${method.name}_s${training.seed}
+
+data:
+  expected_demos: 200
+  expected_physical_steps: 17937
+  chunk_size: 30
+  configs_per_frame: 2
+
+training:
+  steps: 20000
+  physical_batch_size: 10
+  log_every: 1
+  seed: 0
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  bf16: 1
+
+evaluation:
+  eval_batch_size: 128
+  eval_every: 500
+  rollout_every: 5000
+  rollout_seeds_per_config: 3
+  rollout_horizon: 400
+  rollout_videos: 3
+  ood_eval_samples: 512
+  ood_eval_seed: 20260827
+
+model:
+  hidden_dim: 512
+  nheads: 8
+  ffn_dim: 2048
+  enc_layers: 4
+  dec_layers: 7
+  dropout: 0.1
+  activation: relu
+  pre_norm: 1
+
+runtime:
+  device: cuda
+
+tracking:
+  wandb_entity: wuji-tech
+  wandb_project: pixel-action-jacobian
+  wandb_mode: online
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

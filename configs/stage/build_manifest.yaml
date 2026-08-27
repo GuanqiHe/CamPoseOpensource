@@ -1,0 +1,11 @@
+name: build-manifest
+script: build_sign_dr_manifest.py
+params:
+  cache: ???
+  design: configs/joint_sign_dr_v1.json
+  output: ???
+  expected_demos: 200
+  expected_physical_steps: 17937
+  val_demos: 40
+  split_seed: 20260827
+  sampling_seed: 20260827

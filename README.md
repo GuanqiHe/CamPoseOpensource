@@ -7,10 +7,10 @@ visible robot motion.
 ## Review surface
 
 ```text
-generate_dataset.py              # collection, cache, manifest, validation
-train.py                         # matched training entrypoint
-eval.py                          # checkpoint-only offline and rollout evaluation
-configs/                         # approved sign configurations and experiment spec
+generate_dataset.py              # Hydra data-pipeline entrypoint
+train.py                         # Hydra matched-training entrypoint
+eval.py                          # Hydra checkpoint evaluation entrypoint
+configs/                         # data stages, methods, train/eval parameters
 src/action_jacobian/
   representation.py             # 15x16x16 pixel action Jacobian
   dataset.py                    # paired physical-state dataset
@@ -24,38 +24,53 @@ optimizer, and evaluation code.
 
 ## Data
 
-Run one stage through the single dispatcher:
+Select one Hydra stage and override only its paths:
 
 ```bash
-python generate_dataset.py collect --task liftrand --num_demos 200 \
-  --action_spaces joint_delta --successful_only --output_dir /path/to/raw
+python generate_dataset.py stage=collect stage.params.output_dir=/path/to/raw
 
-python generate_dataset.py build-cache \
-  --dataset-dir /path/to/config_datasets --output /path/to/cache.hdf5
+python generate_dataset.py stage=build_cache \
+  stage.params.dataset_dir=/path/to/config_datasets \
+  stage.params.output=/path/to/cache.hdf5
 
-python generate_dataset.py build-manifest \
-  --cache /path/to/cache.hdf5 --design configs/joint_sign_dr_v1.json \
-  --output /path/to/manifest.json
+python generate_dataset.py stage=build_manifest \
+  stage.params.cache=/path/to/cache.hdf5 \
+  stage.params.output=/path/to/manifest.json
 
-python generate_dataset.py validate --help
+python generate_dataset.py stage=validate --cfg job
 ```
 
 ## Train
 
-Formal runs require W&B online tracking. Inspect `python train.py --help` for
-the complete fixed-budget configuration. Training is never part of unit tests.
+The four matched methods are selected with `method=none`, `method=sign_array`,
+`method=global_token`, or `method=pixel_jacobian`. Inspect the resolved config
+without launching training:
+
+```bash
+python train.py method=pixel_jacobian --cfg job
+```
+
+Formal runs require W&B online tracking. Training is never part of unit tests.
+
+## Test
+
+```bash
+python -m unittest discover -s tests -v
+python generate_dataset.py stage=validate \
+  stage.params.canonical_dataset=/path/to/canonical.hdf5 \
+  stage.params.output_dir=/tmp/jacobian-unit-test
+```
 
 ## Evaluate
 
 ```bash
 python eval.py \
-  --checkpoint /path/to/step.pth \
-  --cache /path/to/cache.hdf5 \
-  --dataset /path/to/raw.hdf5 \
-  --design configs/joint_sign_dr_v1.json \
-  --manifest /path/to/manifest.json \
-  --dinov3-model-path /path/to/dinov3 \
-  --config-id sign_ood_00 --output-dir /path/to/eval
+  paths.checkpoint=/path/to/step.pth \
+  paths.cache=/path/to/cache.hdf5 \
+  paths.dataset=/path/to/raw.hdf5 \
+  paths.manifest=/path/to/manifest.json \
+  paths.dinov3_model=/path/to/dinov3 \
+  config_id=sign_ood_00 paths.output_dir=/path/to/eval
 ```
 
 The historical camera-conditioning implementation and simulator submodules are

@@ -1,0 +1,7 @@
+name: validate
+script: run_sign_dr_unit_test.py
+params:
+  canonical_dataset: ???
+  output_dir: ???
+  frames_per_demo: 3
+  epsilon: 1.0e-5

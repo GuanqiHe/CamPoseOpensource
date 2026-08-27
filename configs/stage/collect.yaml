@@ -1,0 +1,14 @@
+name: collect
+script: gen_robosuite_format_demo.py
+params:
+  task: liftrand
+  num_demos: 200
+  output_files:
+    - joint_delta.hdf5
+  action_spaces:
+    - joint_delta
+  seed: 42
+  robot: Panda
+  successful_only: true
+  max_attempts: null
+  output_dir: ???

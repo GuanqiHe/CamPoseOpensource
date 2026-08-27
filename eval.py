@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import hydra
 import numpy as np
 import torch
+from hydra.utils import to_absolute_path
+from omegaconf import DictConfig
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -21,23 +23,28 @@ from action_jacobian.models.policy import DeterministicDinoACTPolicy
 from train import action_metrics, load_sign_dr_inputs, rollout_success
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--cache", required=True)
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--design", required=True)
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--dinov3-model-path", required=True)
-    parser.add_argument("--config-id", required=True)
-    parser.add_argument("--output-dir")
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--rollout-seeds", type=int, default=50)
-    parser.add_argument("--rollout-horizon", type=int, default=400)
-    parser.add_argument("--rollout-videos", type=int, default=3)
-    parser.add_argument("--skip-rollout", action="store_true")
-    args = parser.parse_args()
+@hydra.main(version_base="1.3", config_path="configs", config_name="eval")
+def main(cfg: DictConfig) -> None:
+    args = SimpleNamespace(
+        checkpoint=to_absolute_path(cfg.paths.checkpoint),
+        cache=to_absolute_path(cfg.paths.cache),
+        dataset=to_absolute_path(cfg.paths.dataset),
+        design=to_absolute_path(cfg.paths.design),
+        manifest=to_absolute_path(cfg.paths.manifest),
+        dinov3_model_path=to_absolute_path(cfg.paths.dinov3_model),
+        output_dir=(
+            None
+            if cfg.paths.output_dir is None
+            else to_absolute_path(cfg.paths.output_dir)
+        ),
+        config_id=str(cfg.config_id),
+        device=str(cfg.runtime.device),
+        batch_size=int(cfg.evaluation.batch_size),
+        rollout_seeds=int(cfg.evaluation.rollout_seeds),
+        rollout_horizon=int(cfg.evaluation.rollout_horizon),
+        rollout_videos=int(cfg.evaluation.rollout_videos),
+        skip_rollout=bool(cfg.evaluation.skip_rollout),
+    )
 
     device = torch.device(args.device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
@@ -96,7 +103,9 @@ def main() -> None:
     }
     if not args.skip_rollout:
         if args.output_dir is None:
-            parser.error("--output-dir is required unless --skip-rollout is set")
+            raise ValueError(
+                "paths.output_dir is required unless evaluation.skip_rollout=true"
+            )
         result["rollout"] = rollout_success(
             model,
             args.dataset,

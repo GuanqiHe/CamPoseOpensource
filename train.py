@@ -9,7 +9,6 @@ disjoint OOD sign conventions on those same episodes.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -19,12 +18,16 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import h5py
+import hydra
 import imageio.v2 as imageio
 import numpy as np
 import torch
 import wandb
+from hydra.utils import to_absolute_path
+from omegaconf import DictConfig, OmegaConf
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
@@ -328,7 +331,7 @@ def rollout_success(
     return result
 
 
-def train(args: argparse.Namespace) -> dict:
+def train(args: SimpleNamespace) -> dict:
     set_seed(args.seed)
     if args.rollout_seeds_per_config <= 0:
         raise ValueError("--rollout-seeds-per-config must be positive")
@@ -605,52 +608,28 @@ def train(args: argparse.Namespace) -> dict:
     return {"samples_seen": samples_seen, "best_heldout_success_rate": best_success}
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cache", required=True)
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--design", required=True)
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--dinov3-model-path", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--run-name", required=True)
-    parser.add_argument(
-        "--condition",
-        choices=("none", "sign_array", "global_token", "pixel_jacobian"),
-        required=True,
-    )
-    parser.add_argument("--expected-demos", type=int, default=200)
-    parser.add_argument("--expected-physical-steps", type=int, default=17937)
-    parser.add_argument("--steps", type=int, default=20000)
-    parser.add_argument("--chunk-size", type=int, default=30)
-    parser.add_argument("--physical-batch-size", type=int, default=10)
-    parser.add_argument("--configs-per-frame", type=int, default=2)
-    parser.add_argument("--eval-batch-size", type=int, default=128)
-    parser.add_argument("--eval-every", type=int, default=500)
-    parser.add_argument("--rollout-every", type=int, default=5000)
-    parser.add_argument("--rollout-seeds-per-config", type=int, required=True)
-    parser.add_argument("--rollout-horizon", type=int, default=400)
-    parser.add_argument("--rollout-videos", type=int, default=3)
-    parser.add_argument("--log-every", type=int, default=1)
-    parser.add_argument("--ood-eval-samples", type=int, default=512)
-    parser.add_argument("--ood-eval-seed", type=int, default=20260827)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--hidden-dim", type=int, default=512)
-    parser.add_argument("--nheads", type=int, default=8)
-    parser.add_argument("--ffn-dim", type=int, default=2048)
-    parser.add_argument("--enc-layers", type=int, default=4)
-    parser.add_argument("--dec-layers", type=int, default=7)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--activation", default="relu")
-    parser.add_argument("--pre-norm", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--bf16", type=int, default=1)
-    parser.add_argument("--wandb-entity", default="wuji-tech")
-    parser.add_argument("--wandb-project", default="pixel-action-jacobian")
-    parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
-    args = parser.parse_args()
+def _namespace(cfg: DictConfig) -> SimpleNamespace:
+    flat = {
+        "cache": to_absolute_path(cfg.paths.cache),
+        "dataset": to_absolute_path(cfg.paths.dataset),
+        "design": to_absolute_path(cfg.paths.design),
+        "manifest": to_absolute_path(cfg.paths.manifest),
+        "dinov3_model_path": to_absolute_path(cfg.paths.dinov3_model),
+        "output_dir": to_absolute_path(cfg.paths.output_dir),
+        "run_name": str(cfg.run.name),
+        "condition": str(cfg.method.name),
+    }
+    for section in ("data", "training", "evaluation", "model", "runtime", "tracking"):
+        values = OmegaConf.to_container(cfg[section], resolve=True)
+        if not isinstance(values, dict):
+            raise TypeError(f"{section} must be a mapping")
+        flat.update(values)
+    return SimpleNamespace(**flat)
+
+
+@hydra.main(version_base="1.3", config_path="configs", config_name="train")
+def main(cfg: DictConfig) -> None:
+    args = _namespace(cfg)
     print(json.dumps(train(args), indent=2, sort_keys=True))
 
 
