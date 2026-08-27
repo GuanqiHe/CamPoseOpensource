@@ -18,10 +18,16 @@ class PixelJacobianPairedDataset(Dataset):
         cache_path: str,
         config_ids: list[str],
         chunk_size: int,
+        include_structural: bool = True,
+        normalize_rgb: bool = True,
+        expected_demos: int | None = None,
+        expected_physical_steps: int | None = None,
     ) -> None:
         super().__init__()
         self.cache_path = cache_path
         self.chunk_size = chunk_size
+        self.include_structural = include_structural
+        self.normalize_rgb = normalize_rgb
         with h5py.File(cache_path, "r") as cache:
             all_config_ids = [
                 value.decode() if isinstance(value, bytes) else str(value)
@@ -45,31 +51,64 @@ class PixelJacobianPairedDataset(Dataset):
             jacobian_parts = []
             action_parts = []
             episode_end_parts = []
+            validation_parts = []
             offset = 0
-            for demo_name in sorted(cache["demos"]):
+            demo_names = sorted(cache["demos"])
+            if expected_demos is not None and len(demo_names) != expected_demos:
+                raise ValueError(
+                    f"Expected {expected_demos} demos, found {len(demo_names)}"
+                )
+            for demo_name in demo_names:
                 group = cache[f"demos/{demo_name}"]
                 rgb = group["rgb"][()]
-                jacobian = group["canonical_pixel_jacobian"][()]
                 actions = group["actions"][()].transpose(1, 0, 2)
-                if not (len(rgb) == len(jacobian) == len(actions)):
+                if len(rgb) != len(actions):
                     raise ValueError(f"Unpaired cache group: {demo_name}")
                 rgb_parts.append(rgb)
-                jacobian_parts.append(jacobian)
+                if include_structural:
+                    jacobian = group["canonical_pixel_jacobian"][()]
+                    if len(jacobian) != len(rgb):
+                        raise ValueError(f"Unpaired Jacobian group: {demo_name}")
+                    jacobian_parts.append(jacobian)
                 action_parts.append(actions)
                 episode_end_parts.append(
                     np.full(len(rgb), offset + len(rgb), dtype=np.int64)
                 )
+                validation_parts.append(np.arange(len(rgb)) % 10 == 0)
                 offset += len(rgb)
 
         self.rgb = np.concatenate(rgb_parts, axis=0)
-        self.canonical_jacobian = np.concatenate(jacobian_parts, axis=0)
+        self.canonical_jacobian = (
+            np.concatenate(jacobian_parts, axis=0)
+            if include_structural
+            else None
+        )
         self.actions = np.concatenate(action_parts, axis=0)
         self.episode_end = np.concatenate(episode_end_parts, axis=0)
+        self.validation_mask = np.concatenate(validation_parts, axis=0)
         self.num_physical_steps = len(self.rgb)
         self.num_configs = len(self.config_indexes)
+        if (
+            expected_physical_steps is not None
+            and self.num_physical_steps != expected_physical_steps
+        ):
+            raise ValueError(
+                f"Expected {expected_physical_steps} physical steps, "
+                f"found {self.num_physical_steps}"
+            )
 
     def __len__(self) -> int:
         return self.num_physical_steps * self.num_configs
+
+    def split_indices(self, split: str) -> list[int]:
+        if split not in ("train", "val"):
+            raise ValueError(f"Unknown split: {split}")
+        selected = ~self.validation_mask if split == "train" else self.validation_mask
+        return [
+            physical_index * self.num_configs + config_offset
+            for physical_index in np.flatnonzero(selected)
+            for config_offset in range(self.num_configs)
+        ]
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         physical_index = index // self.num_configs
@@ -89,27 +128,28 @@ class PixelJacobianPairedDataset(Dataset):
         is_pad = np.arange(self.chunk_size) >= chunk_length
 
         rgb = self.rgb[physical_index].astype(np.float32) / 255.0
-        rgb = (rgb - IMAGE_MEAN[None, None]) / IMAGE_STD[None, None]
+        if self.normalize_rgb:
+            rgb = (rgb - IMAGE_MEAN[None, None]) / IMAGE_STD[None, None]
         rgb = np.transpose(rgb, (2, 0, 1)).copy()
-
-        jacobian = self.canonical_jacobian[physical_index].copy()
-        signs = self.joint_signs[config_index]
-        jacobian[:14] = (
-            jacobian[:14].reshape(7, 2, 16, 16)
-            * signs[:, None, None, None]
-        ).reshape(14, 16, 16)
-        jacobian[:14] /= self.jacobian_rms[:, None, None]
-
-        return {
+        result = {
             "image": torch.from_numpy(rgb),
-            "pixel_jacobian": torch.from_numpy(jacobian),
-            "global_sign": torch.from_numpy(signs.copy()),
             "actions": torch.from_numpy(normalized_actions),
             "raw_actions": torch.from_numpy(raw_actions),
             "is_pad": torch.from_numpy(is_pad),
             "config_index": torch.tensor(config_index, dtype=torch.long),
             "physical_index": torch.tensor(physical_index, dtype=torch.long),
         }
+        if self.include_structural:
+            jacobian = self.canonical_jacobian[physical_index].copy()
+            signs = self.joint_signs[config_index]
+            jacobian[:14] = (
+                jacobian[:14].reshape(7, 2, 16, 16)
+                * signs[:, None, None, None]
+            ).reshape(14, 16, 16)
+            jacobian[:14] /= self.jacobian_rms[:, None, None]
+            result["pixel_jacobian"] = torch.from_numpy(jacobian)
+            result["global_sign"] = torch.from_numpy(signs.copy())
+        return result
 
     def normalized_l1_bayes_bound(self) -> float:
         total_error = 0.0

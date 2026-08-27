@@ -22,12 +22,13 @@ import imageio.v2 as imageio
 import numpy as np
 import torch
 import wandb
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Subset
 
 import robosuite as suite
 from robosuite.wrappers.action_wrapper import wrap_env_action_space
 
 from models.deterministic_dinov3_act import DeterministicDinoACTPolicy
+from pixel_jacobian_dataset import PixelJacobianPairedDataset
 
 
 def set_seed(seed: int) -> None:
@@ -51,81 +52,6 @@ def git_commit(repo: str) -> str:
 
 def autocast_context(enabled: bool):
     return torch.autocast("cuda", dtype=torch.bfloat16) if enabled else nullcontext()
-
-
-class LiftFrameDataset(Dataset):
-    """Frame-indexed ACT samples backed by the deterministic cloud RGB cache."""
-
-    def __init__(
-        self,
-        dataset_path: str,
-        rgb_cache_path: str,
-        chunk_size: int,
-        split: str,
-        expected_demos: int = 200,
-    ):
-        self.dataset_path = dataset_path
-        self.rgb_cache_path = rgb_cache_path
-        self.chunk_size = chunk_size
-        self.split = split
-        self._cache_handle = None
-        self.actions = {}
-        self.indices = []
-        all_actions = []
-        with h5py.File(dataset_path, "r") as source, h5py.File(rgb_cache_path, "r") as cache:
-            if not bool(cache["data"].attrs.get("complete", False)):
-                raise RuntimeError("RGB cache is incomplete")
-            source_hash = sha256_file(dataset_path)
-            cached_hash = cache["data"].attrs.get("source_sha256", "")
-            if cached_hash != source_hash:
-                raise RuntimeError(f"RGB cache source hash mismatch: {cached_hash} != {source_hash}")
-            demo_names = sorted(
-                (name for name in source["data"] if name.startswith("demo_")),
-                key=lambda name: int(name.split("_")[-1]),
-            )
-            if len(demo_names) != expected_demos:
-                raise RuntimeError(f"Expected exactly {expected_demos} demos, found {len(demo_names)}")
-            for demo_name in demo_names:
-                actions = source["data"][demo_name]["actions"][()].astype(np.float32)
-                rgb = cache["data"][demo_name]["agentview_rgb"]
-                if len(rgb) != len(actions):
-                    raise RuntimeError(f"Length mismatch for {demo_name}: rgb={len(rgb)}, actions={len(actions)}")
-                self.actions[demo_name] = actions
-                all_actions.append(actions)
-                for timestep in range(len(actions)):
-                    is_val = timestep % 10 == 0
-                    if (split == "val" and is_val) or (split == "train" and not is_val):
-                        self.indices.append((demo_name, timestep))
-        action_array = np.concatenate(all_actions, axis=0)
-        self.action_mean = action_array.mean(axis=0).astype(np.float32)
-        self.action_std = np.maximum(action_array.std(axis=0), 1e-4).astype(np.float32)
-        self.action_min = action_array.min(axis=0).astype(np.float32)
-        self.action_max = action_array.max(axis=0).astype(np.float32)
-
-    def __len__(self) -> int:
-        return len(self.indices)
-
-    def _cache(self):
-        if self._cache_handle is None:
-            self._cache_handle = h5py.File(self.rgb_cache_path, "r", swmr=True)
-        return self._cache_handle
-
-    def __getitem__(self, index: int):
-        demo_name, timestep = self.indices[index]
-        image = self._cache()["data"][demo_name]["agentview_rgb"][timestep]
-        image = torch.from_numpy(np.asarray(image).copy()).permute(2, 0, 1).float().div_(255.0)
-        actions = self.actions[demo_name]
-        chunk = np.zeros((self.chunk_size, actions.shape[1]), dtype=np.float32)
-        is_pad = np.ones(self.chunk_size, dtype=np.bool_)
-        available = min(self.chunk_size, len(actions) - timestep)
-        chunk[:available] = actions[timestep : timestep + available]
-        is_pad[:available] = False
-        chunk = (chunk - self.action_mean) / self.action_std
-        return {
-            "image": image.unsqueeze(0),
-            "actions": torch.from_numpy(chunk),
-            "is_pad": torch.from_numpy(is_pad),
-        }
 
 
 def build_env(dataset_path: str):
@@ -241,13 +167,23 @@ def train(args: argparse.Namespace) -> None:
     commit = git_commit(repo)
     run_dir = Path(args.output_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    train_set = LiftFrameDataset(args.dataset, args.rgb_cache, args.chunk_size, "train", args.expected_demos)
-    val_set = LiftFrameDataset(args.dataset, args.rgb_cache, args.chunk_size, "val", args.expected_demos)
+    paired_dataset = PixelJacobianPairedDataset(
+        args.paired_cache,
+        config_ids=["cfg0"],
+        chunk_size=args.chunk_size,
+        include_structural=False,
+        normalize_rgb=False,
+        expected_demos=args.expected_demos,
+        expected_physical_steps=args.expected_physical_steps,
+    )
+    train_set = Subset(paired_dataset, paired_dataset.split_indices("train"))
+    val_set = Subset(paired_dataset, paired_dataset.split_indices("val"))
+    cfg0_actions = paired_dataset.actions[:, paired_dataset.config_indexes[0]]
     stats = {
-        "action_mean": train_set.action_mean,
-        "action_std": train_set.action_std,
-        "action_min": train_set.action_min,
-        "action_max": train_set.action_max,
+        "action_mean": paired_dataset.action_mean,
+        "action_std": paired_dataset.action_std,
+        "action_min": cfg0_actions.min(axis=0),
+        "action_max": cfg0_actions.max(axis=0),
     }
     config = vars(args).copy()
     import mujoco
@@ -256,13 +192,14 @@ def train(args: argparse.Namespace) -> None:
     config.update(
         git_commit=commit,
         dataset_sha256=sha256_file(args.dataset),
-        rgb_cache_sha256=sha256_file(args.rgb_cache),
+        paired_cache_sha256=sha256_file(args.paired_cache),
         dinov3_weights_sha256=sha256_file(os.path.join(args.dinov3_model_path, "model.safetensors")),
         dinov3_model_source="ModelScope:facebook/dinov3-vitb16-pretrain-lvd1689m",
         train_frames=len(train_set),
         val_frames=len(val_set),
         action_dim=8,
         configuration="canonical_cfg0",
+        training_source="paired_cache_cfg0",
         structural_condition="none",
         policy_source_tokens="dinov3_rgb_patches_only",
         cvae_latent=False,
@@ -309,7 +246,7 @@ def train(args: argparse.Namespace) -> None:
     )
     wandb.run.summary["git_commit"] = commit
     wandb.run.summary["dataset_sha256"] = config["dataset_sha256"]
-    wandb.run.summary["rgb_cache_sha256"] = config["rgb_cache_sha256"]
+    wandb.run.summary["paired_cache_sha256"] = config["paired_cache_sha256"]
 
     samples_seen = 0
     last_log_time = time.time()
@@ -323,7 +260,10 @@ def train(args: argparse.Namespace) -> None:
             except StopIteration:
                 train_iterator = iter(train_loader)
                 batch = next(train_iterator)
-            batch = {key: value.cuda(non_blocking=True) for key, value in batch.items()}
+            batch = {
+                key: batch[key].cuda(non_blocking=True)
+                for key in ("image", "actions", "is_pad")
+            }
             policy.train()
             with autocast_context(use_bf16):
                 losses = policy(batch)
@@ -350,7 +290,10 @@ def train(args: argparse.Namespace) -> None:
                     for batch_index, batch in enumerate(val_loader):
                         if batch_index >= args.val_batches:
                             break
-                        batch = {key: value.cuda(non_blocking=True) for key, value in batch.items()}
+                        batch = {
+                            key: batch[key].cuda(non_blocking=True)
+                            for key in ("image", "actions", "is_pad")
+                        }
                         with autocast_context(use_bf16):
                             rows.append(policy(batch))
                 values = mean_metrics(rows)
@@ -386,7 +329,7 @@ def train(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True)
-    parser.add_argument("--rgb-cache", required=True)
+    parser.add_argument("--paired-cache", required=True)
     parser.add_argument("--dinov3-model-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--run-name", required=True)
@@ -395,6 +338,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--expected-demos", type=int, default=200)
+    parser.add_argument("--expected-physical-steps", type=int, default=17_937)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=20_000)

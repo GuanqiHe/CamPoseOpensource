@@ -48,6 +48,8 @@ class DeterministicDinoACTPolicy(nn.Module):
 
     def forward(self, data: dict[str, torch.Tensor]):
         image = data["image"]
+        if image.ndim == 4:
+            image = image.unsqueeze(1)
         visual_features, visual_positions = self.backbone(image)
         queries = repeat(
             self.action_queries.weight,
