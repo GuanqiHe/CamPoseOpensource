@@ -26,6 +26,70 @@ def global_jacobian_descriptor(field: np.ndarray) -> np.ndarray:
     return np.concatenate([mean, rms]).astype(np.float32)
 
 
+def build_joint_flip_manifest(
+    source: "JointFlipSource",
+    train_config_ids: Sequence[str],
+    val_demos: int = 40,
+    split_seed: int = 20260827,
+    sampling_seed: int = 20260827,
+    configs_per_frame: int = 2,
+) -> dict:
+    """Create one reproducible episode split and config-pair sampling map."""
+
+    train_config_ids = list(train_config_ids)
+    if len(set(train_config_ids)) != len(train_config_ids):
+        raise ValueError("train_config_ids must be unique")
+    unknown = sorted(set(train_config_ids) - set(source.cache_config_signs))
+    if unknown:
+        raise ValueError(f"Unknown training configurations: {unknown}")
+    if not 1 <= val_demos < source.num_demos:
+        raise ValueError(
+            f"val_demos must be in [1,{source.num_demos - 1}], got {val_demos}"
+        )
+    if not 2 <= configs_per_frame <= len(train_config_ids):
+        raise ValueError(
+            "configs_per_frame must be at least 2 and no larger than the "
+            f"number of training configurations ({len(train_config_ids)})"
+        )
+
+    split_rng = np.random.default_rng(split_seed)
+    val_demo_indexes = np.sort(
+        split_rng.choice(source.num_demos, size=val_demos, replace=False)
+    )
+    val_demo_set = set(int(index) for index in val_demo_indexes)
+    val_demo_names = [
+        source.demo_names[index]
+        for index in val_demo_indexes
+    ]
+    train_demo_names = [
+        name
+        for index, name in enumerate(source.demo_names)
+        if index not in val_demo_set
+    ]
+
+    sampling_rng = np.random.default_rng(sampling_seed)
+    config_rank = {config_id: index for index, config_id in enumerate(train_config_ids)}
+    sampled_config_ids_by_physical = []
+    for _ in range(source.num_physical_steps):
+        sampled = sampling_rng.choice(
+            train_config_ids, size=configs_per_frame, replace=False
+        )
+        sampled = sorted(sampled.tolist(), key=config_rank.__getitem__)
+        sampled_config_ids_by_physical.append(sampled)
+
+    return {
+        "version": 1,
+        "split_seed": int(split_seed),
+        "sampling_seed": int(sampling_seed),
+        "val_demos": int(val_demos),
+        "configs_per_frame": int(configs_per_frame),
+        "train_config_ids": train_config_ids,
+        "train_demo_names": train_demo_names,
+        "val_demo_names": val_demo_names,
+        "sampled_config_ids_by_physical": sampled_config_ids_by_physical,
+    }
+
+
 class PixelJacobianPairedDataset(Dataset):
     def __init__(
         self,
@@ -218,13 +282,14 @@ class JointFlipSource:
             action_parts = []
             episode_end_parts = []
             validation_parts = []
+            demo_index_parts = []
             offset = 0
             demo_names = sorted(cache["demos"])
             if expected_demos is not None and len(demo_names) != expected_demos:
                 raise ValueError(
                     f"Expected {expected_demos} demos, found {len(demo_names)}"
                 )
-            for demo_name in demo_names:
+            for demo_index, demo_name in enumerate(demo_names):
                 group = cache[f"demos/{demo_name}"]
                 rgb = group["rgb"][()]
                 jacobian = group["canonical_pixel_jacobian"][()]
@@ -255,6 +320,9 @@ class JointFlipSource:
                     np.full(len(rgb), offset + len(rgb), dtype=np.int64)
                 )
                 validation_parts.append(np.arange(len(rgb)) % 10 == 0)
+                demo_index_parts.append(
+                    np.full(len(rgb), demo_index, dtype=np.int64)
+                )
                 offset += len(rgb)
 
         self.rgb = np.concatenate(rgb_parts, axis=0)
@@ -262,6 +330,9 @@ class JointFlipSource:
         self.canonical_actions = np.concatenate(action_parts, axis=0)
         self.episode_end = np.concatenate(episode_end_parts, axis=0)
         self.validation_mask = np.concatenate(validation_parts, axis=0)
+        self.demo_names = demo_names
+        self.demo_index_by_physical = np.concatenate(demo_index_parts, axis=0)
+        self.num_demos = len(self.demo_names)
         self.num_physical_steps = len(self.rgb)
         if (
             expected_physical_steps is not None
@@ -289,6 +360,8 @@ class JointFlipPairedDataset(Dataset):
         action_std: np.ndarray | None = None,
         action_min: np.ndarray | None = None,
         action_max: np.ndarray | None = None,
+        physical_indexes: Sequence[int] | None = None,
+        sampled_config_ids_by_physical: Sequence[Sequence[str]] | None = None,
     ) -> None:
         super().__init__()
         if split not in ("train", "val", "all"):
@@ -311,21 +384,66 @@ class JointFlipPairedDataset(Dataset):
         if not np.all(np.isin(self.joint_signs, (-1.0, 1.0))):
             raise ValueError("Joint signs must contain only -1 or +1")
 
-        if split == "train":
-            selected = ~source.validation_mask
-        elif split == "val":
-            selected = source.validation_mask
+        if physical_indexes is None:
+            if split == "train":
+                selected = ~source.validation_mask
+            elif split == "val":
+                selected = source.validation_mask
+            else:
+                selected = np.ones(source.num_physical_steps, dtype=bool)
+            self.physical_indexes = np.flatnonzero(selected)
         else:
-            selected = np.ones(source.num_physical_steps, dtype=bool)
-        self.physical_indexes = np.flatnonzero(selected)
+            self.physical_indexes = np.asarray(physical_indexes, dtype=np.int64)
+            if np.any(
+                (self.physical_indexes < 0)
+                | (self.physical_indexes >= source.num_physical_steps)
+            ):
+                raise ValueError("physical_indexes contains an out-of-range index")
         self.num_physical_steps = len(self.physical_indexes)
-        self.num_configs = len(self.config_ids)
+        self.config_id_to_index = {
+            config_id: index for index, config_id in enumerate(self.config_ids)
+        }
 
-        convention_actions = np.repeat(
-            source.canonical_actions[:, None, :], self.num_configs, axis=1
-        )
-        convention_actions[..., :7] *= self.joint_signs[None]
-        flattened_actions = convention_actions.reshape(-1, 8)
+        self.sampled_config_ids_by_physical = {}
+        self.pair_indices_by_physical = {}
+        pair_parts = []
+        for physical_index in self.physical_indexes:
+            physical_index = int(physical_index)
+            if sampled_config_ids_by_physical is None:
+                sampled_config_ids = list(self.config_ids)
+            else:
+                sampled_config_ids = list(
+                    sampled_config_ids_by_physical[physical_index]
+                )
+            if not sampled_config_ids:
+                raise ValueError(
+                    f"No configurations selected for physical index {physical_index}"
+                )
+            if len(set(sampled_config_ids)) != len(sampled_config_ids):
+                raise ValueError(
+                    f"Duplicate sampled configurations at physical index "
+                    f"{physical_index}: {sampled_config_ids}"
+                )
+            unknown = sorted(set(sampled_config_ids) - set(self.config_ids))
+            if unknown:
+                raise ValueError(
+                    f"Unknown sampled configurations at physical index "
+                    f"{physical_index}: {unknown}"
+                )
+            self.sampled_config_ids_by_physical[physical_index] = sampled_config_ids
+            pair_indices = []
+            for config_id in sampled_config_ids:
+                pair_indices.append(len(pair_parts))
+                pair_parts.append(
+                    (physical_index, self.config_id_to_index[config_id])
+                )
+            self.pair_indices_by_physical[physical_index] = pair_indices
+        self.pairs = np.asarray(pair_parts, dtype=np.int64)
+
+        flattened_actions = source.canonical_actions[
+            self.pairs[:, 0]
+        ].copy()
+        flattened_actions[:, :7] *= self.joint_signs[self.pairs[:, 1]]
         computed_mean = flattened_actions.mean(axis=0).astype(np.float32)
         computed_std = flattened_actions.std(axis=0).astype(np.float32)
         computed_std = np.maximum(computed_std, 1e-6)
@@ -357,12 +475,12 @@ class JointFlipPairedDataset(Dataset):
                     raise ValueError(f"{name} must have shape (8,)")
 
     def __len__(self) -> int:
-        return self.num_physical_steps * self.num_configs
+        return len(self.pairs)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        physical_offset = index // self.num_configs
-        config_index = index % self.num_configs
-        physical_index = int(self.physical_indexes[physical_offset])
+        physical_index, config_index = self.pairs[index]
+        physical_index = int(physical_index)
+        config_index = int(config_index)
         signs = self.joint_signs[config_index]
         episode_end = int(self.source.episode_end[physical_index])
         chunk_end = min(physical_index + self.chunk_size, episode_end)
@@ -414,10 +532,17 @@ class JointFlipPairedDataset(Dataset):
             canonical = self.source.canonical_actions[
                 physical_index:chunk_end
             ]
+            sampled_config_ids = self.sampled_config_ids_by_physical[
+                int(physical_index)
+            ]
             targets = np.repeat(
-                canonical[None], self.num_configs, axis=0
+                canonical[None], len(sampled_config_ids), axis=0
             )
-            targets[..., :7] *= self.joint_signs[:, None]
+            config_indexes = np.asarray(
+                [self.config_id_to_index[config_id] for config_id in sampled_config_ids],
+                dtype=np.int64,
+            )
+            targets[..., :7] *= self.joint_signs[config_indexes][:, None, :]
             targets = (
                 targets - self.action_mean[None, None]
             ) / self.action_std[None, None]
@@ -459,9 +584,11 @@ class PairedPhysicalBatchSampler(Sampler[list[int]]):
                 size=self.physical_batch_size,
             )
             yield [
-                int(physical_index * self.dataset.num_configs + config_index)
+                pair_index
                 for physical_index in physical_indexes
-                for config_index in range(self.dataset.num_configs)
+                for pair_index in self.dataset.pair_indices_by_physical[
+                    int(self.dataset.physical_indexes[physical_index])
+                ]
             ]
 
     def __len__(self) -> int:

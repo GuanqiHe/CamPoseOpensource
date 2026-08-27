@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Train matched RGB and RGB+pixel-Jacobian joint-flip policies."""
+"""Train matched joint-flip policies with episode and configuration splits.
+
+Each run uses the same fixed 160/40 episode split and the same reproducible
+two-configuration-per-physical-frame manifest.  ID validation uses the sampled
+training configurations on the held-out episodes; OOD validation uses cfg5 on
+those same held-out episodes.
+"""
 
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ from pixel_jacobian_dataset import (
     JointFlipPairedDataset,
     JointFlipSource,
     PairedPhysicalBatchSampler,
+    build_joint_flip_manifest,
     global_jacobian_descriptor,
 )
 from robosuite.wrappers.action_wrapper import wrap_env_action_space
@@ -62,14 +69,24 @@ def git_commit() -> str:
 def fit_action_stats(
     source: JointFlipSource,
     config_signs: dict[str, np.ndarray],
+    physical_indexes: np.ndarray,
+    sampled_config_ids_by_physical: list[list[str]],
 ) -> dict[str, np.ndarray]:
-    physical = np.flatnonzero(~source.validation_mask)
-    signs = np.asarray(list(config_signs.values()), dtype=np.float32)
-    actions = np.repeat(
-        source.canonical_actions[physical, None, :], len(signs), axis=1
-    )
-    actions[..., :7] *= signs[None]
-    flat = actions.reshape(-1, 8)
+    action_parts = []
+    for physical_index in physical_indexes:
+        config_ids = sampled_config_ids_by_physical[int(physical_index)]
+        signs = np.asarray(
+            [config_signs[config_id] for config_id in config_ids],
+            dtype=np.float32,
+        )
+        actions = np.repeat(
+            source.canonical_actions[int(physical_index)][None],
+            len(config_ids),
+            axis=0,
+        )
+        actions[:, :7] *= signs
+        action_parts.append(actions)
+    flat = np.concatenate(action_parts, axis=0)
     return {
         "action_mean": flat.mean(axis=0).astype(np.float32),
         "action_std": np.maximum(flat.std(axis=0), 1e-6).astype(np.float32),
@@ -284,7 +301,37 @@ def train(args: argparse.Namespace) -> dict:
         for config_id in args.train_configs
     }
     heldout_signs = {args.heldout_config: np.asarray(HELDOUT_SIGNS[args.heldout_config], dtype=np.float32)}
-    stats = fit_action_stats(source, train_signs)
+    manifest = build_joint_flip_manifest(
+        source,
+        args.train_configs,
+        val_demos=args.val_demos,
+        split_seed=args.split_seed,
+        sampling_seed=args.sampling_seed,
+        configs_per_frame=args.configs_per_frame,
+    )
+    demo_to_index = {
+        demo_name: index for index, demo_name in enumerate(source.demo_names)
+    }
+    train_demo_indexes = np.asarray(
+        [demo_to_index[name] for name in manifest["train_demo_names"]],
+        dtype=np.int64,
+    )
+    val_demo_indexes = np.asarray(
+        [demo_to_index[name] for name in manifest["val_demo_names"]],
+        dtype=np.int64,
+    )
+    train_physical_indexes = np.flatnonzero(
+        np.isin(source.demo_index_by_physical, train_demo_indexes)
+    )
+    val_physical_indexes = np.flatnonzero(
+        np.isin(source.demo_index_by_physical, val_demo_indexes)
+    )
+    stats = fit_action_stats(
+        source,
+        train_signs,
+        train_physical_indexes,
+        manifest["sampled_config_ids_by_physical"],
+    )
     include_structural = args.condition == "pixel_jacobian"
     include_global_jacobian = args.condition == "global_token"
     include_sign_array = args.condition == "sign_array"
@@ -293,9 +340,11 @@ def train(args: argparse.Namespace) -> dict:
         train_signs,
         args.chunk_size,
         "train",
-        include_structural,
-        include_global_jacobian,
-        include_sign_array,
+        include_structural=include_structural,
+        include_global_jacobian=include_global_jacobian,
+        include_sign_array=include_sign_array,
+        physical_indexes=train_physical_indexes,
+        sampled_config_ids_by_physical=manifest["sampled_config_ids_by_physical"],
         **stats,
     )
     val_set = JointFlipPairedDataset(
@@ -303,9 +352,11 @@ def train(args: argparse.Namespace) -> dict:
         train_signs,
         args.chunk_size,
         "val",
-        include_structural,
-        include_global_jacobian,
-        include_sign_array,
+        include_structural=include_structural,
+        include_global_jacobian=include_global_jacobian,
+        include_sign_array=include_sign_array,
+        physical_indexes=val_physical_indexes,
+        sampled_config_ids_by_physical=manifest["sampled_config_ids_by_physical"],
         **stats,
     )
     heldout_set = JointFlipPairedDataset(
@@ -313,9 +364,10 @@ def train(args: argparse.Namespace) -> dict:
         heldout_signs,
         args.chunk_size,
         "val",
-        include_structural,
-        include_global_jacobian,
-        include_sign_array,
+        include_structural=include_structural,
+        include_global_jacobian=include_global_jacobian,
+        include_sign_array=include_sign_array,
+        physical_indexes=val_physical_indexes,
         **stats,
     )
     args.action_dim = 8
@@ -340,6 +392,14 @@ def train(args: argparse.Namespace) -> dict:
         train_samples=len(train_set),
         val_samples=len(val_set),
         heldout_samples=len(heldout_set),
+        train_physical_steps=len(train_physical_indexes),
+        val_physical_steps=len(val_physical_indexes),
+        samples_seen_target=(
+            args.steps * args.physical_batch_size * args.configs_per_frame
+        ),
+        manifest_sha256=hashlib.sha256(
+            json.dumps(manifest, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
         action_stats_source="train physical frames and train configurations only",
     )
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
@@ -347,6 +407,8 @@ def train(args: argparse.Namespace) -> dict:
         json.dump(config, handle, indent=2, sort_keys=True)
     with open(run_dir / "dataset_stats.json", "w") as handle:
         json.dump({key: value.tolist() for key, value in stats.items()}, handle, indent=2)
+    with open(run_dir / "split_manifest.json", "w") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
 
     run = wandb.init(
         entity=args.wandb_entity,
@@ -384,13 +446,19 @@ def train(args: argparse.Namespace) -> dict:
                     step=step,
                 )
             if step % args.eval_every == 0 or step == args.steps:
-                train_metrics = action_metrics(model, val_set, args.condition, device, args.eval_batch_size)
-                heldout_metrics = action_metrics(model, heldout_set, args.condition, device, args.eval_batch_size)
+                id_metrics = action_metrics(
+                    model, val_set, args.condition, device, args.eval_batch_size
+                )
+                ood_metrics = action_metrics(
+                    model, heldout_set, args.condition, device, args.eval_batch_size
+                )
                 metrics = {
-                    "val_train/normalized_action_mae": train_metrics["normalized_action_mae"],
-                    "val_heldout/normalized_action_mae": heldout_metrics["normalized_action_mae"],
-                    "val_heldout/arm_sign_accuracy": heldout_metrics["arm_sign_accuracy"],
-                    "val_heldout/gripper_sign_accuracy": heldout_metrics["gripper_sign_accuracy"],
+                    "val_id/normalized_action_mae": id_metrics["normalized_action_mae"],
+                    "val_id/arm_sign_accuracy": id_metrics["arm_sign_accuracy"],
+                    "val_id/gripper_sign_accuracy": id_metrics["gripper_sign_accuracy"],
+                    "val_ood/normalized_action_mae": ood_metrics["normalized_action_mae"],
+                    "val_ood/arm_sign_accuracy": ood_metrics["arm_sign_accuracy"],
+                    "val_ood/gripper_sign_accuracy": ood_metrics["gripper_sign_accuracy"],
                 }
                 wandb.log(metrics, step=step)
                 torch.save(
@@ -451,7 +519,11 @@ def main() -> None:
     parser.add_argument("--expected-physical-steps", type=int, default=17937)
     parser.add_argument("--steps", type=int, default=20000)
     parser.add_argument("--chunk-size", type=int, default=30)
-    parser.add_argument("--physical-batch-size", type=int, default=4)
+    parser.add_argument("--physical-batch-size", type=int, default=10)
+    parser.add_argument("--val-demos", type=int, default=40)
+    parser.add_argument("--split-seed", type=int, default=20260827)
+    parser.add_argument("--sampling-seed", type=int, default=20260827)
+    parser.add_argument("--configs-per-frame", type=int, default=2)
     parser.add_argument("--eval-batch-size", type=int, default=128)
     parser.add_argument("--eval-every", type=int, default=1000)
     parser.add_argument("--rollout-every", type=int, default=5000)
