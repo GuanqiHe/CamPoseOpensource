@@ -320,7 +320,7 @@ def train(args: argparse.Namespace) -> dict:
             target = batch["actions"].to(device, non_blocking=True)
             is_pad = batch["is_pad"].to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bool(args.bf16)):
                 prediction = model(inputs)
                 valid = (~is_pad).unsqueeze(-1).expand_as(target)
                 loss = F.l1_loss(prediction[valid], target[valid])
