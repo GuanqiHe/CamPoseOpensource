@@ -24,6 +24,7 @@ class HydraConfigTest(unittest.TestCase):
                 self.assertEqual(cfg.method.name, method)
                 self.assertEqual(cfg.data.chunk_size, 30)
                 self.assertEqual(cfg.data.configs_per_frame, 2)
+                self.assertEqual(cfg.evaluation.rollout_seeds_per_config, 3)
 
     def test_all_dataset_stages_compose(self):
         expected = {
