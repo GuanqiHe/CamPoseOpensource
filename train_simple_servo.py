@@ -134,6 +134,7 @@ def main():
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--run-name", default=None)
     parser.add_argument("--wandb-entity", default="wuji-tech")
     parser.add_argument("--wandb-project", default="pixel-action-jacobian-simple-servo")
     args = parser.parse_args()
@@ -156,7 +157,12 @@ def main():
     output = Path(args.output_dir); output.mkdir(parents=True, exist_ok=True)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     config = vars(args) | {"git_commit": commit, "train_physical": 1600, "id_val_physical": 200, "test_physical": 200, "train_configs": 4, "ood_configs": 4}
-    run = wandb.init(entity=args.wandb_entity, project=args.wandb_project, name=f"{args.condition}_s{args.seed}", config=config)
+    run = wandb.init(
+        entity=args.wandb_entity,
+        project=args.wandb_project,
+        name=args.run_name or f"{args.condition}_s{args.seed}",
+        config=config,
+    )
     rng = np.random.default_rng(args.seed)
     start_time = time.perf_counter()
     for step in range(1, args.steps + 1):
