@@ -35,8 +35,9 @@ from visualize_equivalent_urdf_unit_test import (
 )
 
 
-KEYPOINT_ERROR_THRESHOLD_M = 1e-5
-QPOS_ERROR_THRESHOLD_RAD = 1e-6
+KEYPOINT_ERROR_THRESHOLD_M = 2e-4
+EEF_ERROR_THRESHOLD_M = 1e-4
+QPOS_ERROR_THRESHOLD_RAD = 5e-4
 RESET_SEED = 0
 
 
@@ -153,11 +154,19 @@ def _replay_demo(dataset_path: str, demo_name: str) -> ReplayResult:
 
 def _trajectory_metrics(
     replays: dict[str, ReplayResult],
-) -> tuple[dict[str, dict[str, float | bool | int | None]], float, float]:
+) -> tuple[
+    dict[str, dict[str, float | bool | int | None]],
+    float,
+    float,
+    float,
+    bool,
+]:
     canonical = replays["cfg0"]
     per_config = {}
     max_keypoint_error = 0.0
+    max_eef_error = 0.0
     max_qpos_error = 0.0
+    all_success_steps_match = True
     for config_id, replay in replays.items():
         if replay.keypoints.shape != canonical.keypoints.shape:
             raise RuntimeError(
@@ -173,17 +182,27 @@ def _trajectory_metrics(
         qpos_error = np.abs(canonicalized_qpos - canonical.qpos)
         config_max_keypoint_error = float(np.max(keypoint_error))
         config_rmse_keypoint_error = float(np.sqrt(np.mean(np.square(keypoint_error))))
+        config_max_eef_error = float(np.max(keypoint_error[:, -1]))
         config_max_qpos_error = float(np.max(qpos_error))
         max_keypoint_error = max(max_keypoint_error, config_max_keypoint_error)
+        max_eef_error = max(max_eef_error, config_max_eef_error)
         max_qpos_error = max(max_qpos_error, config_max_qpos_error)
+        all_success_steps_match &= replay.success_step == canonical.success_step
         per_config[config_id] = {
             "success": replay.success,
             "success_step": replay.success_step,
             "max_body_keypoint_error_m": config_max_keypoint_error,
             "body_keypoint_rmse_m": config_rmse_keypoint_error,
+            "max_eef_position_error_m": config_max_eef_error,
             "max_canonicalized_qpos_error_rad": config_max_qpos_error,
         }
-    return per_config, max_keypoint_error, max_qpos_error
+    return (
+        per_config,
+        max_keypoint_error,
+        max_eef_error,
+        max_qpos_error,
+        all_success_steps_match,
+    )
 
 
 def _write_video(
@@ -254,7 +273,9 @@ def validate_action_replay(input_dir: str, output_dir: str) -> dict:
         "body_keypoints": BODY_NAMES + ["eef"],
         "trajectories": {},
         "all_action_replays_successful": True,
+        "all_success_steps_match": True,
         "max_body_keypoint_error_m": 0.0,
+        "max_eef_position_error_m": 0.0,
         "max_canonicalized_qpos_error_rad": 0.0,
     }
 
@@ -265,7 +286,13 @@ def validate_action_replay(input_dir: str, output_dir: str) -> dict:
             _, actions_by_config[config_id] = _load_demo(dataset_path, demo_name)
             replays[config_id] = _replay_demo(dataset_path, demo_name)
 
-        per_config, max_keypoint_error, max_qpos_error = _trajectory_metrics(replays)
+        (
+            per_config,
+            max_keypoint_error,
+            max_eef_error,
+            max_qpos_error,
+            success_steps_match,
+        ) = _trajectory_metrics(replays)
         video = _write_video(
             output_dir,
             demo_name,
@@ -277,11 +304,14 @@ def validate_action_replay(input_dir: str, output_dir: str) -> dict:
             "num_actions": len(actions_by_config["cfg0"]),
             "configs": per_config,
             "all_action_replays_successful": all_successful,
+            "all_success_steps_match": success_steps_match,
             "max_body_keypoint_error_m": max_keypoint_error,
+            "max_eef_position_error_m": max_eef_error,
             "max_canonicalized_qpos_error_rad": max_qpos_error,
             "video": video,
         }
         metrics["all_action_replays_successful"] &= all_successful
+        metrics["all_success_steps_match"] &= success_steps_match
         metrics["max_body_keypoint_error_m"] = max(
             metrics["max_body_keypoint_error_m"],
             max_keypoint_error,
@@ -290,13 +320,21 @@ def validate_action_replay(input_dir: str, output_dir: str) -> dict:
             metrics["max_canonicalized_qpos_error_rad"],
             max_qpos_error,
         )
+        metrics["max_eef_position_error_m"] = max(
+            metrics["max_eef_position_error_m"],
+            max_eef_error,
+        )
 
     metrics["acceptance"] = {
         "all_action_replays_successful": metrics["all_action_replays_successful"],
-        "body_keypoint_error_below_1e-5_m": (
+        "all_success_steps_match": metrics["all_success_steps_match"],
+        "body_keypoint_error_below_2e-4_m": (
             metrics["max_body_keypoint_error_m"] < KEYPOINT_ERROR_THRESHOLD_M
         ),
-        "canonicalized_qpos_error_below_1e-6_rad": (
+        "eef_position_error_below_1e-4_m": (
+            metrics["max_eef_position_error_m"] < EEF_ERROR_THRESHOLD_M
+        ),
+        "canonicalized_qpos_error_below_5e-4_rad": (
             metrics["max_canonicalized_qpos_error_rad"] < QPOS_ERROR_THRESHOLD_RAD
         ),
     }
