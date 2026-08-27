@@ -31,6 +31,7 @@ from visualize_equivalent_urdf_unit_test import (
     FRAME_SIZE,
     _draw_action_panel,
     _keypoints_world,
+    _tile_config_panels,
 )
 
 
@@ -215,11 +216,11 @@ def _write_video(
                     action_scale,
                 )
             )
-        combined_frames.append(np.concatenate(panels, axis=1))
+        combined_frames.append(_tile_config_panels(panels))
 
     video_path = os.path.join(
         output_dir,
-        f"{demo_name}_action_replay_five_configs.mp4",
+        f"{demo_name}_action_replay_{len(CONFIG_SPECS)}_configs.mp4",
     )
     with imageio.get_writer(video_path, fps=20, codec="libx264", quality=8) as writer:
         for frame in combined_frames:

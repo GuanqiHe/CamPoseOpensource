@@ -8,6 +8,9 @@ unchanged even though the robot model and action labels differ.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 
 from robosuite.models.robots.manipulators.panda_robot import Panda
@@ -77,3 +80,41 @@ CONFIG_SPECS = {
     for cls in (PandaCfg0, PandaCfg1, PandaCfg2, PandaCfg3, PandaCfg4)
 }
 
+
+def _register_sign_config(config_id: str, signs: list[int]):
+    class_name = "Panda" + "".join(part.title() for part in config_id.split("_"))
+    cls = type(
+        class_name,
+        (_EquivalentPandaBase,),
+        {
+            "__module__": __name__,
+            "JOINT_SIGNS": np.asarray(signs, dtype=np.float64),
+            "CONFIG_ID": config_id,
+        },
+    )
+    cls = register_robot_class("FixedBaseRobot")(cls)
+    globals()[class_name] = cls
+    return cls
+
+
+_SIGN_DR_DESIGN_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "experiment_specs"
+    / "joint_sign_dr_v1.json"
+)
+_SIGN_DR_DESIGN = json.loads(_SIGN_DR_DESIGN_PATH.read_text())
+
+
+def _build_sign_dr_specs(split: str) -> dict[str, dict]:
+    specs = {}
+    for config_id, signs in _SIGN_DR_DESIGN[split].items():
+        cls = _register_sign_config(config_id, signs)
+        specs[config_id] = {
+            "robot": cls.__name__,
+            "joint_signs": list(signs),
+        }
+    return specs
+
+
+SIGN_DR_TRAIN_CONFIG_SPECS = _build_sign_dr_specs("train")
+SIGN_DR_OOD_CONFIG_SPECS = _build_sign_dr_specs("ood")

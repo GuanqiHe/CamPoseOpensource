@@ -80,6 +80,17 @@ def _draw_action_panel(frame: np.ndarray, config_id: str, action: np.ndarray, pi
     return canvas
 
 
+def _tile_config_panels(panels: list[np.ndarray]) -> np.ndarray:
+    columns = min(4, len(panels))
+    rows = []
+    for start in range(0, len(panels), columns):
+        row = list(panels[start : start + columns])
+        while len(row) < columns:
+            row.append(np.zeros_like(panels[0]))
+        rows.append(np.concatenate(row, axis=1))
+    return np.concatenate(rows, axis=0)
+
+
 def _load_dataset(dataset_path: str):
     with h5py.File(dataset_path, "r") as dataset:
         demos = {}
@@ -197,9 +208,11 @@ def visualize_unit_test(input_dir: str, output_dir: str) -> None:
                         action_scale,
                     )
                 )
-            combined_frames.append(np.concatenate(panels, axis=1))
+            combined_frames.append(_tile_config_panels(panels))
 
-        video_path = os.path.join(output_dir, f"{demo_name}_five_configs.mp4")
+        video_path = os.path.join(
+            output_dir, f"{demo_name}_{len(CONFIG_SPECS)}_configs.mp4"
+        )
         with imageio.get_writer(video_path, fps=20, codec="libx264", quality=8) as writer:
             for frame in combined_frames:
                 writer.append_data(frame)
