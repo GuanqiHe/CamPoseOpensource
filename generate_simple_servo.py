@@ -18,6 +18,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from action_jacobian.simple_servo import OOD_SIGNS, TRAIN_SIGNS, make_sample, rollout_oracle, sample_state
 
 
+def downsample_field(field: np.ndarray) -> np.ndarray:
+    return field.reshape(7, 16, 4, 16, 4).mean(axis=(2, 4)).astype(np.float16)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
@@ -30,17 +34,21 @@ def main() -> None:
     preview = Path(args.preview_dir)
     preview.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
-    q_values, targets, images, actions = [], [], [], []
+    q_values, targets, images, fields, descriptors, actions = [], [], [], [], [], []
     oracle_results = []
     for index in range(args.physical_samples):
         q, target = sample_state(rng)
         q_values.append(q)
         targets.append(target)
         images.append(make_sample(q, target, TRAIN_SIGNS[0]).image)
-        config_actions = []
+        config_fields, config_descriptors, config_actions = [], [], []
         for signs in np.concatenate([TRAIN_SIGNS, OOD_SIGNS]):
             sample = make_sample(q, target, signs)
+            config_fields.append(downsample_field(sample.pixel_jacobian))
+            config_descriptors.append(sample.global_jacobian)
             config_actions.append(sample.action)
+        fields.append(config_fields)
+        descriptors.append(config_descriptors)
         actions.append(config_actions)
         if index < 100:
             for config_index, signs in enumerate(np.concatenate([TRAIN_SIGNS, OOD_SIGNS])):
@@ -54,6 +62,8 @@ def main() -> None:
         dataset.create_dataset("q", data=np.stack(q_values), compression="gzip")
         dataset.create_dataset("target", data=np.stack(targets), compression="gzip")
         dataset.create_dataset("rgb", data=np.stack(images), compression="gzip")
+        dataset.create_dataset("pixel_jacobian", data=np.asarray(fields), compression="gzip")
+        dataset.create_dataset("global_jacobian", data=np.asarray(descriptors), compression="gzip")
         dataset.create_dataset("actions", data=np.asarray(actions), compression="gzip")
         dataset.create_dataset("train_signs", data=TRAIN_SIGNS)
         dataset.create_dataset("ood_signs", data=OOD_SIGNS)
